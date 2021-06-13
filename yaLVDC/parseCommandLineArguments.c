@@ -1,5 +1,5 @@
 /*
- * Copyright 2019 Ronald S. Burkey <info@sandroid.org>
+ * Copyright 2019-20 Ronald S. Burkey <info@sandroid.org>
  *
  * This file is part of yaAGC.
  *
@@ -16,11 +16,22 @@
  * along with yaAGC; if not, write to the Free Software
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  *
+ * In addition, as a special exception, Ronald S. Burkey gives permission to
+ * link the code of this program with the Orbiter SDK library (or with
+ * modified versions of the Orbiter SDK library that use the same license as
+ * the Orbiter SDK library), and distribute linked combinations including
+ * the two. You must obey the GNU General Public License in all respects for
+ * all of the code used other than the Orbiter SDK library. If you modify
+ * this file, you may extend this exception to your version of the file,
+ * but you are not obligated to do so. If you do not wish to do so, delete
+ * this exception statement from your version.
+ *
  * Filename:    parseCommandLineArguments.c
  * Purpose:     Parses the command line for yaLVDC.c.
  * Compiler:    GNU gcc.
  * Reference:   http://www.ibibio.org/apollo
  * Mods:        2019-09-18 RSB  Began.
+ *              2020-04-29 RSB  Resumed development (including --ptc).
  */
 
 #include <stdio.h>
@@ -40,17 +51,45 @@ static char helpMessage[] = "Usage:\n"
     "              B.src files are used for symbolic debugging. Multiple\n"
     "              --assembly arguments can be used if several programs are\n"
     "              overlaid in core memory.\n"
+    "--cold-start  If used, does not load a core-memory image (see --core)\n"
+    "              upon startup.\n"
     "--core=F      The initial core-memory image is filename F. The default\n"
     "              is yaLVDC.core.  Note that the file will be periodically\n"
     "              modified during emulation as core memory changes.  If the\n"
     "              file does not exist initially, then the initial state is\n"
     "              instead taken from the --assembly file, but the --core\n"
     "              file will still be created and periodically updated.\n"
+    "--ptc         Emulate a PTC target rather than an LVDC target.\n"
+    "--run         Start the LVDC/PTC program running freely.  By default,\n"
+    "              (without --run), will simply pause without running.\n"
+    "              This relates only to the built-in yaLVDC debugger.\n"
+    "--panel-pause Start the PTC program in a paused state relative to\n"
+    "              control by the PTC front panel.  By default (without\n"
+    "              --panel-pause), the emulation will be running freely.\n"
+    "              This is unrelated to the built-in yaLVDC debugger, and\n"
+    "              has no effect on whether a debugger prompt appears.\n"
+    "--port=N      Specifies the port number used by the server for virtual\n"
+    "              connection to peripherals.  Default is 19653.\n"
+    "--divisor=N   Slows down the emulated CPU clock by a factor of N (with\n"
+    "              the default obviously being 1).  This is intended to be\n"
+    "              used with very slow peripheral emulations, such as yaPTC.py\n"
+    "              that cannot keep up with yaLVDC otherwise.\n"
+    "The following comment applies only to PTC emulation, and not to LVDC.\n"
+    "Regarding debugging using the yaLVDC built-in debugger vs the PTC panel's\n"
+    "debugging features, such as the emulated PTC program being paused, single\n"
+    "stepped, breakpoints, and so on, these two debugging capabilities\n"
+    "are separate and essentially independent.  To a certain extent they can\n"
+    "coexist without problems, but it is best to avoid using the yaLVDC debugger\n"
+    "when using the PTC debugging, and vice-versa.  Specifically, to use the\n"
+    "PTC debugger you'd normally allow the yaLVDC debugger to free-run the\n"
+    "emulation, while to use the yaLVDC debugger you'd allow the PTC panel to\n"
+    "free run the CPU.  Thus the command-line switches --run and --panel-pause\n"
+    "would generally be used together (for PTC emulations), or not at all.\n"
     "";
 
-char *assemblyBasenames[MAX_PROGRAMS] =
-  { "yaLVDC" };
 char *coreFilename = "yaLVDC.core";
+int ptc = 0;
+int coldStart = 0;
 
 // Parse a set of command-line arguments and set global variables based
 // on them.
@@ -58,26 +97,38 @@ int
 parseCommandLineArguments (int argc, char *argv[])
 {
   int retVal = 1;
-  int i, jAssembly = 0;
+  int i, j;
 
   for (i = 1; i < argc; i++)
     {
       if (!strncmp (argv[i], "--assembly=", 11))
 	{
-	  if (jAssembly >= MAX_PROGRAMS)
+	  if (numAssemblies >= MAX_ASSEMBLIES)
 	    {
-	      pushErrorMessage ("Too many --assembly arguments", NULL);
+	      printf ("Too many --assembly arguments\n");
 	      goto help;
 	    }
-	  assemblyBasenames[jAssembly++] = &argv[i][11];
+	  assemblies[numAssemblies++].name = &argv[i][11];
 	}
       else if (!strncmp (argv[i], "--core=", 7))
 	coreFilename = &argv[i][7];
+      else if (!strcmp (argv[i], "--ptc"))
+        ptc = 1;
+      else if (1 == sscanf(argv[i], "--port=%d", &j))
+        PortNum = j;
+      else if (!strcmp (argv[i], "--cold-start"))
+        coldStart = 1;
+      else if (!strcmp (argv[i], "--run"))
+        runStepN = INT_MAX;
+      else if (!strcmp (argv[i], "--panel-pause"))
+        panelPause = 2;
+      else if (1 == sscanf(argv[i], "--divisor=%d", &j))
+        clockDivisor = j;
       else if (!strcmp (argv[i], "--help"))
 	goto help;
       else
 	{
-	  pushErrorMessage ("Unrecognized command-line argument:", argv[i]);
+	  printf ("Unrecognized command-line argument: %s\n", argv[i]);
 	  help: ;
 	  fprintf (stderr, "%s", helpMessage);
 	  goto done;
