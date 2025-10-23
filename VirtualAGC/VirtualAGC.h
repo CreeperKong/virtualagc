@@ -62,6 +62,8 @@
  *          	                the upper left.
  *              2022-10-28 RSB  Added LM131R1, SUNRISE45, and SUNRISE69.
  *              2022-11-17 RSB  Added Aurora 88.
+ *              2024-05-21 RSB  Added Comanche 72.
+ *              2025-01-11 RSB  Added a Tic-tac-toe "mission".
  *
  * This file was originally generated using the wxGlade RAD program.
  * However, it is now maintained entirely manually, and any ability to
@@ -155,6 +157,7 @@ enum
   // ID_LUM99R2BUTTON,
   ID_APOLLO12CMBUTTON,
   ID_APOLLO12LMBUTTON,
+  ID_COMANCHE72BUTTON,
   ID_APOLLO13CMBUTTON,
   ID_LUMINARY130BUTTON,
   ID_LUMINARY131BUTTON,
@@ -179,6 +182,7 @@ enum
   ID_SUNBURST37BUTTON,
   ID_ZERLINA56BUTTON,
   ID_SUPERJOBBUTTON,
+  ID_TICTACTOEBUTTON,
   ID_AGCCUSTOMBUTTON,
   ID_AEASIMTYPEBOX = 200,
   ID_FLIGHTPROGRAM4BUTTON,
@@ -199,6 +203,9 @@ enum
   ID_DSKYHALFBUTTON,
   ID_DSKYLITEBUTTON,
   ID_DSKYNAVBUTTON,
+  ID_DSKYNAVHALFBUTTON,
+  ID_DSKYAPOBUTTON,
+  ID_DSKYAPOHALFBUTTON,
   ID_AGCDEBUGBOX = 500,
   ID_AGCDEBUGNORMALBUTTON,
   ID_AGCDEBUGMONITORBUTTON,
@@ -222,6 +229,7 @@ enum
 #define BLOCK1 1
 #define NO_PERIPHERALS 0
 #define PERIPHERALS 1
+#define TELEMETRY_PERIPHERALS 2
 // Configuration data for a single "mission".  See missionConstants[] in
 // VirtualAGC.cpp.
 typedef struct
@@ -232,7 +240,11 @@ typedef struct
   int enabled; // Either DISABLED (grayed-out) or ENABLED in the UI.
   int lm; // Either LM or CM.
   int Block1; // Either BLOCK2 or BLOCK1.
-  int noPeripherals; // Either PERIPHERALS or NO_PERIPHERALS (i.e., DSKY only)
+  // For `noPeripherals`:
+  // 	NO_PERIPHERALS = Only DSKY allowed.
+  // 	TELEMETRY_PERIPHERAL = Only DSKY and telemetry allowed.
+  // 	PERIPHERALS = All peripherals allowed.
+  int noPeripherals;
   const char basename[32]; // Fragment of name for locating the rope file.
   const char dsky[16]; // DSKY config file, usually LM.ini or CM.ini. Ignored for Block 1.
 } missionAlloc_t;
@@ -319,7 +331,7 @@ public:
   EnableRunButton(void);
   long SimulationProcessID;
   void
-  SetSize(void);
+  SetFontSizes(void);
   int Points, StartingPoints;
   bool ReallySmall;
   bool DropDown;
@@ -338,6 +350,8 @@ private:
 
   bool
   FormLmsIni(void);
+  bool
+  FormTiling(void);
   bool
   FormCommands(void);
   bool
@@ -439,6 +453,9 @@ protected:
   wxRadioButton* DskyHalfButton;
   wxRadioButton* DskyLiteButton;
   wxRadioButton* DskyNavButton;
+  wxRadioButton* DskyNavHalfButton;
+  wxRadioButton* DskyApoButton;
+  wxRadioButton* DskyApoHalfButton;
   wxStaticText* DownlinkLabel;
   wxRadioButton* TelemetryResizable;
   wxRadioButton* TelemetryRetro;
@@ -462,7 +479,6 @@ protected:
   wxStaticLine* static_line_1;
   wxButton* RunButton;
   wxButton* DefaultsButton;
-  wxButton* ExitButton;
   wxBoxSizer* optionsBox;
   wxStaticBoxSizer* agcStartupBox;
   wxGridSizer* interfaceStylesBox;
@@ -471,6 +487,8 @@ protected:
   DECLARE_EVENT_TABLE()
 
 public:
+  wxButton* ExitButton;
+
   virtual void
   ConsistencyEvent(wxCommandEvent &event);
   virtual void

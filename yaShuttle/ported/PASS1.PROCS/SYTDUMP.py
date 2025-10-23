@@ -289,7 +289,7 @@ class cSYT_DUMP:  # Local variables for SYT_DUMP().
                          'INPUT-PARM AUTOMATIC  STATIC     INITIAL    ' + \
                          'CONSTANT   ACCESS     REENTRANT  EXCLUSIVE  ' + \
                          'EXTERNAL   REMOTE     INCREM     '
-        self.NAMER = 'NAME'
+        self.NAMER = 'NAME '
         self.LABEL_ON_END = g.FALSE
 
 
@@ -331,7 +331,8 @@ def SYT_DUMP():
         OUTPUT(1, '0         (CROSS REFERENCE FLAG KEY:  4 = ASSIGNMENT, ' + \
                   '2 = REFERENCE, 1 = SUBSCRIPT USE, 0 = DEFINITION)');
         l.S = ' DCL  NAME' + SUBSTR(g.X70, 0, J - 3) + \
-                '        TYPE ATTRIBUTES & CROSS REFERENCE';
+                "        TYPE                          " \
+                             "ATTRIBUTES & CROSS REFERENCE";
         OUTPUT(1, g.DOUBLE + l.S);
         OUTPUT(1, g.SUBHEADING + l.S);
         OUTPUT(0, g.X1);
@@ -903,7 +904,7 @@ def SYT_DUMP():
                                 l.S = SUBSTR(l.S, 0, LENGTH(l.S) - 6);
                                 l.KI = 1;
                                 l.JL = SHR(ADD_XREFS(g.SYT_XREF(l.I), g.FALSE), 13) & 7;
-                                if l.JL:
+                                if 0 != (l.JL & 1):
                                     l.JL = l.JL | 2;  # MERGE SUBSCR & REF FLAGS
                                 if l.J == g.COMPOOL_LABEL:
                                     l.JL = l.JL | 6;
@@ -939,7 +940,7 @@ def SYT_DUMP():
                                     l.JL = l.JL | 6;
                                 l.JL = SHR(l.JL, 1);
                                 l.R = TRUNCATE(SUBSTR(l.CUSS, l.JL * 23, 23));
-                                if (l.JL == 1) and l.KI: 
+                                if 0 != (1 & ((l.JL == 1) & l.KI)): 
                                     g.NOT_ASSIGNED_FLAG = 0xFF;
                                     l.R = '***** ERROR ***** REFERENCED BUT ' + l.R;
                                     OUTPUT(0, l.S + l.T);

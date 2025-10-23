@@ -8,6 +8,7 @@ Purpose:    This is part of the port of the original XPL source code for
 Contact:    The Virtual AGC Project (www.ibiblio.org/apollo).
 History:    2023-08-31 RSB  Created a stub.
             2023-09-04 RSB  Began porting.
+            2024-06-20 RSB  Stuff related to `D DOWNGRADE`
             
 Note that the original of this file was pretty spaghetti-like.  Refer to the
 notes concerning goto_XXXX in SCAN.xpl for an explanation of the workaround
@@ -17,8 +18,12 @@ technique.
 from xplBuiltins import *
 import g
 import HALINCL.CERRDECL as d
+import HALINCL.COMMON as h
+import HALINCL.SPACELIB as s
+import HALINCL.DWNTABLE as t
 from CHARINDE import CHAR_INDEX
 from ERROR    import ERROR
+from ERRORS   import ERRORS
 from NEXTRECO import NEXT_RECORD
 from ORDEROK  import ORDER_OK
 from OUTPUTGR import OUTPUT_GROUP
@@ -293,7 +298,7 @@ class cSTREAM:
         self.RETURNING_M = g.TRUE
         self.RETURNING_S = 0
         self.RETURNING_E = 0
-        self.PREV_CARD = 1
+        self.PREV_CARD = 0
         self.CHAR_TEMP = ''
         self.RETURN_CHAR = [0] * 3
         self.TYPE_CHAR = [0] * 3
@@ -481,6 +486,10 @@ def STREAM():
     D_TOKEN calls PRINT_COMMENT() (in PRINTCOM), but I'm not sure as of 
     yet why that means PRINT_COMMENT has to be embedded here, and perhaps
     I'll come back to that issue later. 
+    Later ... PRINT_COMMENT() needs to be included here specifically because
+    it need to use the local variable `I` from `STREAM`, whereas otherwise
+    it would be using the global variable `I`, which would mess up pagination
+    in the procedure `PRINT2`.  There may be other reasons as well.
         
     As for the inclusion of INCSDF, its PROCEDURE INCLUDE_SDF() is similar 
     to D_TOKEN(), in that it accesses (and modifies) D_CONTINUATION_OK, so
@@ -513,14 +522,25 @@ def STREAM():
             if not g.INCLUDING:
                 g.INCLUDE_STMT = -1;
 
+        def CHAR_VALUE(STR):
+            g.K = 0
+            g.J = 0;
+            g.VAL = 0;
+            while g.J < LENGTH(STR):
+                g.K = BYTE(STR, g.J);
+                if (g.K >= BYTE('0')) and (g.K <= BYTE('9')):
+                    g.VAL = g.VAL * 10 + (g.K - BYTE('0'));
+                g.J = g.J + 1;
+            return g.VAL;
+
         if BYTE(g.CURRENT_CARD) == BYTE('C'):
-            PRINT_COMMENT(g.TRUE);
+            PRINT_COMMENT(g.TRUE, l);
         elif BYTE(g.CURRENT_CARD) == BYTE('D'):
             # A DIRECTIVE CARD 
             hd.D_INDEX = 1;
             ll.C[0] = hd.D_TOKEN();
             if (ll.C[0] == ll.EJECT_DIR) or (ll.C[0] == ll.SPACE_DIR):
-                PRINT_COMMENT(g.FALSE);
+                PRINT_COMMENT(g.FALSE, l);
                 if ll.C[0] == ll.EJECT_DIR:
                     if not g.PAGE_THROWN or g.LOOKED_RECORD_AHEAD != 0:
                         g.LOOKED_RECORD_AHEAD = 0;
@@ -540,32 +560,22 @@ def STREAM():
                     if g.LOOKED_RECORD_AHEAD == 0:
                         g.LOOKED_RECORD_AHEAD = LINE_LIM;
                         EJECT_PAGE();
-                    if LINE_COUNT + g.J > g.LOOKED_RECORD_AHEAD:
+                    if lc.LINE_COUNT + g.J > g.LOOKED_RECORD_AHEAD:
                         g.LOOKED_RECORD_AHEAD = 0;
                     else:
                         for ll.I in range(1, g.J + 1):
                             OUTPUT(0, g.X1);
                 return;
-            PRINT_COMMENT(g.TRUE, ll.C[0]);
+            PRINT_COMMENT(g.TRUE, l, ll.C[0]);
             if (ll.C[0] == 'EB') or (ll.C[0] == 'EBUG'):  # DEBUG DIRECTIVE
-                
-                def CHAR_VALUE(STR):
-                    g.K = 0
-                    g.J = 0;
-                    g.VAL = 0;
-                    while g.J < LENGTH(STR):
-                        g.K = BYTE(STR, g.J);
-                        if (g.K >= BYTE('0')) and (g.K <= BYTE('9')):
-                            g.VAL = g.VAL * 10 + (g.K - BYTE('0'));
-                        g.J = g.J + 1;
-                    return g.VAL;
                 
                 ll.C[0] = hd.D_TOKEN();
                 while LENGTH(ll.C[0]) != 0:
                     if SUBSTR(ll.C[0], 0, 2) == 'H(':
                         g.SMRK_FLAG = CHAR_VALUE(ll.C[0]);
                     else:  # ADD NEW DEBUG TYPES HERE
-                        ll.C[0] = hd.D_TOKEN();
+                        pass;
+                    ll.C[0] = hd.D_TOKEN();
                 for ll.I in range(1, g.TEXT_LIMIT[0]):
                     # See section 2.2.7 (PDF p. 40) of "HAL/S-FC & HAL/S-360
                     # Compiler System Program Description".
@@ -662,8 +672,9 @@ def STREAM():
             # END OF INCLUDE DIRECTIVE
             elif ll.C[0] == 'VERSION':
                 if g.TPL_VERSION > 0:
-                    # ll.I = BYTE(g.CURRENT_CARD, hd.D_INDEX + 1);
-                    ll.I = int(g.CURRENT_CARD[hd.D_INDEX + 1:], 16)
+                    ll.I = int(g.CURRENT_CARD[hd.D_INDEX + 1:]);
+                    #ll.I = int(g.CURRENT_CARD[hd.D_INDEX + 1:], 16)
+                    #print("***DEBUG***", g.CURRENT_CARD, ll.I, file=sys.stderr)
                     g.SYT_LOCKp(g.TPL_VERSION, ll.I);
                     g.TPL_VERSION = 0;
             elif ll.C[0] == 'DOWNGRADE' or ll.C[0] == 'OWNGRADE':  # DOWNGRADE
@@ -675,7 +686,7 @@ def STREAM():
                 ll.C[0] = hd.D_TOKEN();
                 if LENGTH(ll.C[0]) == 0:  # NO ERROR NUMBER TO DOWNGRADE 
                     ERRORS(d.CLASS_BI, 108);
-                elif g.DOWN_COUNT > DOWNGRADE_LIMIT:  # OBTAIN CLASS
+                elif g.DOWN_COUNT > h.DOWNGRADE_LIMIT:  # OBTAIN CLASS
                     '''
                     /* IN ORDER TO COMPLETELY REMOVE THE LIMIT ON THE NUMBER OF          */
                     /* ALLOWABLE DOWNGRADES JUST REMOVE THIS IF STATEMENT AND   */
@@ -685,7 +696,7 @@ def STREAM():
                     '''
                     ERRORS (d.CLASS_BI, 109);
                 else:
-                    NEXT_ELEMENT(h.DOWN_INFO);
+                    s.NEXT_ELEMENT(h.DOWN_INFO);
                     g.DOWN_COUNT = g.DOWN_COUNT + 1;
                     for ll.I in range(0, 2):
                        g.TEMP_CLS = SUBSTR(ll.C[0], 0, ll.I + 1);
@@ -693,7 +704,7 @@ def STREAM():
                        if g.ULT_TEMP_CLS >= '0' and g.ULT_TEMP_CLS <= '9':
                           g.CONTINUE = 1;
                        if g.CONTINUE == 0:  # GET CLASS
-                          g.ULT_TEMP_CLS = PAD('d.CLASS_' + g.TEMP_CLS, 8);
+                          g.ULT_TEMP_CLS = PAD('CLASS_' + g.TEMP_CLS, 8);
                           g.FIN_TMP_CLS = SUBSTR(g.X1 + g.ULT_TEMP_CLS, 1);
                        # END DETERMINE CLASS
                     # END OF ELSE FOR CLASS
@@ -712,17 +723,17 @@ def STREAM():
                             g.INCREMENT_DOWN_STMT = g.FALSE;
                     # ATTACH DOWNGRADE TO CORRECT STATEMENT
                     if g.INCREMENT_DOWN_STMT and TOKEN == SEMI_COLON:
-                        DWN_STMT(g.DOWN_COUNT, SUBSTR(g.X1 + g.STMT_NUM() + 1, 1));
+                        g.DWN_STMT(g.DOWN_COUNT, SUBSTR(g.X1 + str(g.STMT_NUM() + 1), 1));
                     else:
-                        DWN_STMT(g.DOWN_COUNT, SUBSTR(g.X1 + g.STMT_NUM(), 1));
+                        g.DWN_STMT(g.DOWN_COUNT, SUBSTR(g.X1 + str(g.STMT_NUM()), 1));
                     g.INCREMENT_DOWN_STMT = ll.TMP_INCREMENT;
                     g.TEMP_CLS = CHAR_VALUE(ll.C[0]);
-                    DWN_ERR(g.DOWN_COUNT, SUBSTR(g.X1 + g.TEMP_CLS, 1));
+                    g.DWN_ERR(g.DOWN_COUNT, SUBSTR(g.X1 + str(g.TEMP_CLS), 1));
                     g.CONTINUE = 1;
                     g.TEMP_COUNT = 0;
-                    while g.CONTINUE == 1 and g.TEMP_COUNT <= NUM_ERR:
-                        if g.FIN_TMP_CLS == ERROR_INDEX(g.TEMP_COUNT):
-                            DWN_CLS(g.DOWN_COUNT, ERR_VALUE(g.TEMP_COUNT));
+                    while g.CONTINUE == 1 and g.TEMP_COUNT <= t.NUM_ERR:
+                        if g.FIN_TMP_CLS == t.ERROR_INDEX[g.TEMP_COUNT]:
+                            g.DWN_CLS(g.DOWN_COUNT, t.ERR_VALUE[g.TEMP_COUNT]);
                             g.CONTINUE = 0;
                         else:
                             g.TEMP_COUNT = g.TEMP_COUNT + 1;
@@ -734,7 +745,7 @@ def STREAM():
                         /* IS NO INFORMATION TO PUT INFO 'DWN_CLS' SINCE THE ERROR CLASS DOES*/
                         /* NOT EXIST).                                                       */
                         '''
-                        DWN_UNKN(g.DOWN_COUNT, ll.C[0]);
+                        g.DWN_UNKN(g.DOWN_COUNT, ll.C[0]);
                         ERRORS (d.CLASS_BI, 107);
             # END OF DOWNGRADE
             elif ll.C[0] == 'PROGRAM':
@@ -771,7 +782,7 @@ def STREAM():
             elif ll.C[0] == 'DEFINE':
                 
                 def COPY_TO_8():
-                    PRINT_COMMENT(ll.LIST_FLAG);
+                    PRINT_COMMENT(ll.LIST_FLAG, l);
                     OUTPUT(8, g.CURRENT_CARD);
                     ll.RECORD_NOT_WRITTEN = g.FALSE;
                     MONITOR(16, 0x10);
@@ -822,7 +833,7 @@ def STREAM():
                                 if INCLUDE_OK():
                                     OUTPUT(8, ll.XC + g.STARS + ll.START + g.INCLUDE_MSG + g.STARS);
                             elif ll.C[0] == 'CLOSE':  # END OF INLINE BLOCK
-                                PRINT_COMMENT(g.TRUE);
+                                PRINT_COMMENT(g.TRUE, l);
                                 ll.C[0] = hd.D_TOKEN();
                                 if LENGTH(ll.C[0]) >= 8:
                                     ll.C[0] = SUBSTR(ll.C[0], 0, 8);
@@ -1164,9 +1175,9 @@ def STREAM():
     
     def MACRO_DIAGNOSTICS(WHERE):
         try:
-            OUTPUT(0, 'AT ' + str(WHERE) + '  NEXT_CHAR=\'' + 
-                   BYTE("", 0, g.NEXT_CHAR) + \
-                   '\'  MACRO_EXPAN_LEVEL=' + \
+            OUTPUT(0, 'AT ' + str(WHERE) + '  NEXT_CHAR=' + 
+                   str(g.NEXT_CHAR) + \
+                   '  MACRO_EXPAN_LEVEL=' + \
                     str(g.MACRO_EXPAN_LEVEL) + '  MACRO_TEXT(' + \
                     str(g.MACRO_POINT) + ')=' + \
                     str(g.MACRO_TEXT(g.MACRO_POINT)) + '  PARM_REPLACE_PTR(' + \

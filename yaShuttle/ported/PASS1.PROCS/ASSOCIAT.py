@@ -81,7 +81,7 @@ def ASSOCIATE(TAG=-1):
     if (g.SYT_FLAGS(I) & g.READ_ACCESS_FLAG) != 0:
         ERROR(d.CLASS_PS, 9, g.VAR[g.MP]);
     if (g.SYT_FLAGS(I) & g.LOCK_FLAG) != 0:  # LOCKED
-        if not g.ASSIGN_ARG_LIST:
+        if not (g.ASSIGN_ARG_LIST & 1):
             if g.UPDATE_BLOCK_LEVEL <= 0:
                 ERROR(d.CLASS_UI, 1, g.VAR[g.MP]);
     J = g.PSEUDO_TYPE[g.PTR[g.MP]];
@@ -103,7 +103,7 @@ def ASSOCIATE(TAG=-1):
     # ARR_STRUC_CHECK:
     K = g.STACK_PTR[g.MP];
     J = g.VAL_P[g.PTR[g.MP]];
-    if g.DELAY_CONTEXT_CHECK: 
+    if 0 != (1 & g.DELAY_CONTEXT_CHECK): 
         if g.SUBSCRIPT_LEVEL == 0:
             SAVE_ARRAYNESS();
             if (J & 0x206) == 0x202:

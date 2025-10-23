@@ -46,6 +46,16 @@
                                 at some point if there's a demand for it,
                                 but the non-simple "decorated" display doesn't
                                 seem worth the effort to maintain.
+                2025-01-01 RSB  Had been required to keep the executable in the
+                                same folder as the image files it loads; fixed
+                                that.
+                2025-02-27 RSB  Began adapting for downlist specifications that
+                                vary by AGC software+version.
+                2025-03-08 RSB	Moved #include for agc_engine.h to yaTelemetry.h.
+                2025-03-11 RSB	Altered on the basis of SHOW_WORD_NUMBERS in
+				agc_engine.h.
+		2025-04-02 RSB	No longer uses the "generic" ddd-ID-LM.tsv and
+				ddd-ID-CM.tsv files.
   
   The program does nothing more than connect to yaAGC on a socket, and then
   display any telemetry messages it receives.  There is a single active widget,
@@ -77,11 +87,16 @@ SimpleFrameClass *SimpleFrame = NULL;
 #include <stdio.h>
 #include <errno.h>
 #include <iostream>
+#include <wx/wx.h>
+#include <wx/filename.h>
+#include <wx/stdpaths.h>
+#include <wx/filefn.h>
 
 using namespace std;
 
 ProcessDownlinkList_t PrintMsk683, PrintMsk966, PrintMsk1123, PrintMsk1137;
 
+static char agcSoftware[32] = "";
 #define PULSE_INTERVAL 100
 static char DefaultHostname[] = "localhost";
 char *Hostname = DefaultHostname;
@@ -104,6 +119,7 @@ static int StartupDelay = 0;
 static int Points = DEFAULT_FONTSIZE_RETRO;
 static bool Simple = false;
 static bool Undecorated = true;
+wxPoint ulCorner = wxPoint(-1, -1);
 
 // Here are some templates for various MSK screens.
 
@@ -346,10 +362,10 @@ MainFrameClass::Undecorate (void)
     delete bitmap_5;
     delete bitmap_3;
     delete bitmap_2;
-    bitmap_1 = new wxStaticBitmap(this, wxID_ANY, wxBitmap(wxT("tTelemetryLeft.jpg"), wxBITMAP_TYPE_ANY));
-    bitmap_5 = new wxStaticBitmap(this, wxID_ANY, wxBitmap(wxT("tTelemetryTop.jpg"), wxBITMAP_TYPE_ANY));
-    bitmap_3 = new wxStaticBitmap(this, wxID_ANY, wxBitmap(wxT("tTelemetryBottom.jpg"), wxBITMAP_TYPE_ANY));
-    bitmap_2 = new wxStaticBitmap(this, wxID_ANY, wxBitmap(wxT("tTelemetryRight.jpg"), wxBITMAP_TYPE_ANY));
+    bitmap_1 = new wxStaticBitmap(this, wxID_ANY, wxBitmap(exePath + wxT("tTelemetryLeft.jpg"), wxBITMAP_TYPE_ANY));
+    bitmap_5 = new wxStaticBitmap(this, wxID_ANY, wxBitmap(exePath + wxT("tTelemetryTop.jpg"), wxBITMAP_TYPE_ANY));
+    bitmap_3 = new wxStaticBitmap(this, wxID_ANY, wxBitmap(exePath + wxT("tTelemetryBottom.jpg"), wxBITMAP_TYPE_ANY));
+    bitmap_2 = new wxStaticBitmap(this, wxID_ANY, wxBitmap(exePath + wxT("tTelemetryRight.jpg"), wxBITMAP_TYPE_ANY));
     do_layout();
 }
 
@@ -474,6 +490,11 @@ SwriteTelemetrySimple (void)
       Dummy += wxString::FromAscii (Sbuffer[i]);
     }
   SimpleFrame->TextCtrl->SetLabel (Dummy);
+#ifdef SHOW_WORD_NUMBERS
+  SimpleFrame->documentation->SetURL(DocumentationURL);
+  SimpleFrame->documentation->Enable();
+  //SimpleFrame->documentation->Show();
+#endif
 }
 
 // This is the event handler for the background timer.  The background timer
@@ -566,6 +587,8 @@ TimerClass::ActOnIncomingIO (unsigned char *Packet)
       SimpleFrame->Refresh ();
       SimpleFrame->Update ();
       SimpleFrame->Show ();
+      wxSize size = SimpleFrame->GetSize();
+      SimpleFrame->SetPosition(ulCorner);
     }
   firstTimeIO = false;
   // Check to see if the message has a yaAGC signature.  If not,
@@ -587,7 +610,7 @@ TimerClass::ActOnIncomingIO (unsigned char *Packet)
   // default processor is overridden and one of the ProcessMskXXXX()
   // functions from later in this file becomes the callback function
   // instead.
-  if (Channel == 013 || Channel == 034 || Channel == 035)
+  if (true /* Channel == 013 || Channel == 034 || Channel == 035 */)
     DecodeDigitalDownlink (Channel, Value, CmOrLm);
   return;
 Error:
@@ -609,15 +632,22 @@ Error:
 MainFrameClass::MainFrameClass(wxWindow* parent, int id, const wxString& title, const wxPoint& pos, const wxSize& size, long style):
     wxFrame(parent, id, title, pos, size, wxCAPTION|wxCLOSE_BOX|wxMINIMIZE_BOX|wxSYSTEM_MENU)
 {
+    if (wxFileExists(wxT("ttTelemetryVertical.jpg")))
+        exePath = wxT("");
+    else {
+        wxFileName f(wxStandardPaths::Get().GetExecutablePath());
+        exePath = f.GetPath() + wxFileName::GetPathSeparator();
+    }
+
     // begin wxGlade: MainFrameClass::MainFrameClass
     wxString undeco = wxT("");
     if (Undecorated)
       undeco = wxT("t");
-    bitmap_1 = new wxStaticBitmap(this, wxID_ANY, wxBitmap(undeco + wxT("TelemetryLeft.jpg"), wxBITMAP_TYPE_ANY));
-    bitmap_5 = new wxStaticBitmap(this, wxID_ANY, wxBitmap(undeco + wxT("TelemetryTop.jpg"), wxBITMAP_TYPE_ANY));
+    bitmap_1 = new wxStaticBitmap(this, wxID_ANY, wxBitmap(exePath + undeco + wxT("TelemetryLeft.jpg"), wxBITMAP_TYPE_ANY));
+    bitmap_5 = new wxStaticBitmap(this, wxID_ANY, wxBitmap(exePath + undeco + wxT("TelemetryTop.jpg"), wxBITMAP_TYPE_ANY));
     TextCtrl = new wxTextCtrl(this, wxID_ANY, wxEmptyString, wxDefaultPosition, wxDefaultSize, wxTE_MULTILINE|wxTE_READONLY|wxTE_RICH|wxNO_BORDER);
-    bitmap_3 = new wxStaticBitmap(this, wxID_ANY, wxBitmap(undeco + wxT("TelemetryBottom.jpg"), wxBITMAP_TYPE_ANY));
-    bitmap_2 = new wxStaticBitmap(this, wxID_ANY, wxBitmap(undeco + wxT("TelemetryRight.jpg"), wxBITMAP_TYPE_ANY));
+    bitmap_3 = new wxStaticBitmap(this, wxID_ANY, wxBitmap(exePath + undeco + wxT("TelemetryBottom.jpg"), wxBITMAP_TYPE_ANY));
+    bitmap_2 = new wxStaticBitmap(this, wxID_ANY, wxBitmap(exePath + undeco + wxT("TelemetryRight.jpg"), wxBITMAP_TYPE_ANY));
 
     set_properties();
     do_layout();
@@ -632,9 +662,9 @@ END_EVENT_TABLE();
 void MainFrameClass::set_properties()
 {
     // begin wxGlade: MainFrameClass::set_properties
-    SetTitle(wxT("yaTelemetry by Ron Burkey"));
+    SetTitle(wxT("yaTelemetry"));
     wxIcon _icon;
-    _icon.CopyFromBitmap(wxBitmap(wxT("ApolloPatch2.png"), wxBITMAP_TYPE_ANY));
+    _icon.CopyFromBitmap(wxBitmap(exePath + wxT("ApolloPatch2.png"), wxBITMAP_TYPE_ANY));
     SetIcon(_icon);
     SetBackgroundColour(wxColour(0, 0, 0));
     SetForegroundColour(wxColour(192, 192, 192));
@@ -691,17 +721,18 @@ bool yaTelemetryApp::OnInit()
 {
     App = this;
     wxInitAllImageHandlers();
-    MainFrame = new MainFrameClass(NULL, wxID_ANY, wxEmptyString);
-    SimpleFrame = new SimpleFrameClass (NULL, wxID_ANY, wxEmptyString);
+    MainFrame = new MainFrameClass(NULL, wxID_ANY, wxEmptyString, ulCorner);
+    SimpleFrame = new SimpleFrameClass (NULL, wxID_ANY, wxEmptyString, ulCorner);
     int i, FontSizeSwitch = 0;
     
     printf ("\n");
-    printf ("yaTelemetry build " __DATE__ " " __TIME__ ", Copyright 2009,2022 Ronald Burkey\n");
-    printf ("For more information, consult http://www.ibiblio.org/apollo.\n");
+    printf ("yaTelemetry build " __DATE__ " " __TIME__ ", Copyright 2009,2022,2025 Ronald Burkey\n");
+    printf ("For more information, consult " DEFAULT_URL ".\n");
 
     // Read the command-line arguments.
     Portnum = 19800;
     CmOrLm = 0;
+
     for (i = 1; i < argc; i++)
       {
         long IntValue;
@@ -741,8 +772,25 @@ bool yaTelemetryApp::OnInit()
             printf ("     --ip=H          The hostname or IP address of the yaAGC server\n");
             printf ("                     to which yaTelemetry should connect.  The\n");
             printf ("                     default is \"localhost\".\n");
+            printf ("     --x=X --y=Y     By default, the window position is some system\n");
+            printf ("                     default.  This option instead allows explicit\n");
+            printf ("                     selection.  The units are pixel coordinates\n");
+            printf ("                     of the upper-left corner, relative to the upper\n");
+            printf ("                     left of the screen.\n");
             printf ("     --spacecraft=S  The type of spacecraft, either LM or CM.  This\n");
-            printf ("                     defaults to LM.\n");
+            printf ("                     defaults to LM.  Note, however, that this value,\n");
+            printf ("                     may be overridden by the --software option below.\n");
+            printf ("                     Conversely, though, --spacecraft should usually be\n");
+            printf ("                     specified even if the --software option is given.\n");
+            printf ("     --software=S    Indicates the downlist specification appropriate\n");
+            printf ("                     for the specific AGC software+revision. If omitted,\n");
+            printf ("                     then generic specifications appropriate to the\n");
+            printf ("                     --software option are used. The AGC software+revision,\n");
+            printf ("                     such as in Luminary099 or Comanche055, must match the\n");
+            printf ("                     corresponding folder name for that software in the\n");
+            printf ("                     Virtual AGC software repository, or else be one of the\n");
+            printf ("                     generic designations LM or CM to match --spacecraft.\n");
+            printf ("                     Note also that these values are all case-sensitive.\n");
             printf ("     --font-size=P   Font size, in points.  Defaults to %d on this\n", DEFAULT_FONTSIZE_RETRO);
             printf ("                     platform for the default or --undecorated style,\n");
             printf ("                     and to %d for the --simple style (see below).\n", DEFAULT_FONTSIZE_RESIZABLE);
@@ -756,6 +804,11 @@ bool yaTelemetryApp::OnInit()
             printf ("     --simple        Produces a simple text display, allowing dynamic\n");
             printf ("                     resizing of the text.  This is by far the best choice\n");
             printf ("                     when there is limited display-screen real estate.\n");
+            printf ("Note: yaTelemetry loads a variety of image files, which it expects to\n");
+            printf ("      find in the folder containing its own executable.  However, they\n");
+            printf ("      could instead be in the current working directory; yaTelemetry\n");
+            printf ("      uses the existence or non-existence of the file ttTelemetryVertical.jpg\n");
+            printf ("      to make the decision as to which folder to use.\n");
             printf ("\n");
             fflush (stdout);
             return (false);
@@ -769,6 +822,14 @@ bool yaTelemetryApp::OnInit()
             strcpy (NonDefaultHostname, Value.char_str ());
             Hostname = NonDefaultHostname;
           }
+        else if (Command.IsSameAs (wxT ("--x")))
+  	{
+      	  ulCorner.x = IntValue;
+  	}
+        else if (Command.IsSameAs (wxT ("--y")))
+  	{
+      	  ulCorner.y = IntValue;
+  	}
         else if (Command.IsSameAs (wxT ("--spacecraft")))
           {
             Value = Value.Lower ();
@@ -783,6 +844,10 @@ bool yaTelemetryApp::OnInit()
                 printf ("Illegal command-line option: %s\n", s);
                 goto Help;
               }
+          }
+        else if (Command.IsSameAs (wxT ("--software")))
+          {
+            strcpy(agcSoftware, Value.mb_str());
           }
         else if (Command.IsSameAs (wxT ("--font-size")))
           {
@@ -806,13 +871,30 @@ bool yaTelemetryApp::OnInit()
           }
       }
 
+    // Let's figure out what downlist specification to use.
+    if (strlen(agcSoftware) == 0)
+      {
+	if (CmOrLm)
+	  strcpy(agcSoftware, "CM");
+	else
+	  strcpy(agcSoftware, "LM");
+      }
+    else
+      {
+#ifdef __APPLE__
+	wxString docPrefixW = wxStandardPaths::Get().GetResourcesDir();
+#else
+	wxString docPrefixW = wxGetCwd();
+#endif
+	docPrefixW = wxT("file://") + docPrefixW + wxT("/documentation/");
+	CmOrLm = dddConfigure(agcSoftware, docPrefixW.mb_str());
+      }
+
     printf ("     --delay=%d\n", StartupDelay);
     printf ("     --port=%d\n", Portnum);
     printf ("     --ip=%s\n", Hostname);
-    if (CmOrLm)
-      printf ("     --spacecraft=CM\n");
-    else
-      printf ("     --spacecraft=LM\n");
+    printf ("     --spacecraft=%d\n", CmOrLm);
+    printf ("     --software=%s\n", agcSoftware);
     printf ("     --font-size=%d\n", Points);
 #ifdef __APPLE__
     Undecorated = true;
@@ -841,9 +923,10 @@ bool yaTelemetryApp::OnInit()
         //SimpleFrame->ClearScreen ();
         SimpleFrame->Timer = new TimerClass ();
         SimpleFrame->Timer->Start (PULSE_INTERVAL);
-    
-        SimpleFrame->Show();
 
+        SimpleFrame->Show();
+        wxSize size = SimpleFrame->GetSize();
+        SimpleFrame->SetPosition(ulCorner);
       }
       
     else
@@ -863,7 +946,7 @@ bool yaTelemetryApp::OnInit()
         MainFrame->Timer->Start (PULSE_INTERVAL);
     
         MainFrame->Show();
-    
+        MainFrame->SetPosition(ulCorner);
       }
     return true;
 }
@@ -885,6 +968,14 @@ SimpleFrameClass::SimpleFrameClass(wxWindow* parent, int id, const wxString& tit
     };
     DecodingBox = new wxRadioBox(panel_1, ID_DECODINGBOX, wxT("Downlink formatting"), wxDefaultPosition, wxDefaultSize, 5, DecodingBox_choices, 0, wxRA_SPECIFY_ROWS);
     TextCtrl = new wxStaticText(this, wxID_ANY, wxEmptyString);
+#ifdef SHOW_WORD_NUMBERS
+    // The following is a dummy assignment that will be overwritten without
+    // the specific URL ever being used.  I hope.
+    documentation = new wxHyperlinkCtrl(this, wxID_ANY, wxT("Documentation"),
+	wxT("file://documentation/ddd-unavailable.html"));
+    documentation->Enable(false);
+    //documentation->Show(false);
+#endif
 
     set_properties();
     do_layout();
@@ -995,9 +1086,9 @@ void SimpleFrameClass::TimerStop(wxCloseEvent &event)
 void SimpleFrameClass::set_properties()
 {
     // begin wxGlade: SimpleFrameClass::set_properties
-    SetTitle(wxT("yaTelemetry by Ron Burkey"));
+    SetTitle(wxT("yaTelemetry"));
     wxIcon _icon;
-    _icon.CopyFromBitmap(wxBitmap(wxT("ApolloPatch2.png"), wxBITMAP_TYPE_ANY));
+    _icon.CopyFromBitmap(wxBitmap(MainFrame->exePath + wxT("ApolloPatch2.png"), wxBITMAP_TYPE_ANY));
     SetIcon(_icon);
     Bigger->SetToolTip(wxT("Make text bigger by clicking this button."));
     Smaller->SetToolTip(wxT("Make text smaller by clicking this button."));
@@ -1040,6 +1131,9 @@ void SimpleFrameClass::do_layout()
     sizer_7->Add(20, 10, 0, 0, 0);
     panel_1->SetSizer(sizer_7);
     sizer_6->Add(panel_1, 0, wxEXPAND, 0);
+#ifdef SHOW_WORD_NUMBERS
+    sizer_6->Add(documentation, 0, wxEXPAND, 0);
+#endif
     sizer_6->Add(TextCtrl, 1, wxEXPAND, 0);
     SetSizer(sizer_6);
     sizer_6->Fit(this);
@@ -1217,7 +1311,7 @@ static ParsedDownlinkList_t ParsedDownlinkList;
 #endif // 0
 
 void
-ParseDownlinkList (const DownlinkListSpec_t *Spec)
+ParseDownlinkList (DownlinkListSpec_t *Spec)
 {
 }
 
@@ -1226,7 +1320,7 @@ ParseDownlinkList (const DownlinkListSpec_t *Spec)
 // that has been buffered in memory.
 
 void
-PrintMsk683 (const DownlinkListSpec_t *Spec)
+PrintMsk683 (DownlinkListSpec_t *Spec)
 {
   ParseDownlinkList (Spec);
 
@@ -1242,7 +1336,7 @@ PrintMsk683 (const DownlinkListSpec_t *Spec)
 
 
 void
-PrintMsk966 (const DownlinkListSpec_t *Spec)
+PrintMsk966 (DownlinkListSpec_t *Spec)
 {
   ParseDownlinkList (Spec);
   
@@ -1258,7 +1352,7 @@ PrintMsk966 (const DownlinkListSpec_t *Spec)
 
 
 void
-PrintMsk1123 (const DownlinkListSpec_t *Spec)
+PrintMsk1123 (DownlinkListSpec_t *Spec)
 {
   ParseDownlinkList (Spec);
   
@@ -1274,7 +1368,7 @@ PrintMsk1123 (const DownlinkListSpec_t *Spec)
 
 
 void
-PrintMsk1137 (const DownlinkListSpec_t *Spec)
+PrintMsk1137 (DownlinkListSpec_t *Spec)
 {
   ParseDownlinkList (Spec);
 
@@ -1288,27 +1382,3 @@ PrintMsk1137 (const DownlinkListSpec_t *Spec)
       //PrintField (&Spec->FieldSpecs[i]);
     }
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

@@ -8,6 +8,7 @@
 #				doesn't work for my current gcc setup.
 #				I don't even recall why it had been there.
 #				Also made the Makefile public domain. 
+#		2025-07-19 RSB	Added HAS_ERRNO_H
 #
 # The default is to build using the native gcc. To cross build from 
 # Linux to get Win32 and Mac OS X executables as well (make all-archs), 
@@ -19,9 +20,19 @@ ifndef cc
 cc=gcc
 endif
 
+OURFLAGS=${CFLAGS}
+ifdef WIN32
+OURFLAGS+=-DHAVE_TIME_H
+LIBS=-lwsock32 -lws2_32 -lwinmm
+endif
+
 ifeq "${USER}" "rburkey"
-#CFLAGS+=-Wall -Werror -O3
-CFLAGS+=-Wall -Werror -O0 -g
+#OURFLAGS+=-Wall -Werror -O3
+OURFLAGS+=-Wall -Werror -O0 -g
+endif
+
+ifdef HAS_ERRNO_H
+OURFLAGS+=-DHAS_ERRNO_H
 endif
 
 SOURCE:=$(wildcard *.c)
@@ -33,7 +44,7 @@ default: ${TARGET}
 all-archs: ${TARGET}
 
 ${TARGET}: ${SOURCE} yaLVDC.h Makefile
-	${cc} ${CFLAGS} -o $@ *.c -lm
+	${cc} ${OURFLAGS} -o $@ *.c -lm ${LIBS}
 
 .PHONY:	clean
 clean:

@@ -86,7 +86,7 @@ TYPE = (0x48, 0x48, 0x48, 9, 9, 0x48, 0x48, 0x47, 0,
         0x47, 0, 0, 1, 0, 0x3E, 1, 0, 0x3E)
 CONDITION = (1, 1, 1, 0, 0, 1, 1, 0, 2, 0, 2, 0, 1, 2, 0, 1, 2, 0)
 MASK = (3, 7, 5, 4, 2, 1, 6, 3, 3, 3, 3, 0, 0, 2, 2, 0, 2, 2)
-MASK2 = (0,0,0,0,0,0,0,1,1,0,0,0,1,1,1,0,0,0) # BIT(8(
+MASK2 = (0,0,0,0,0,0,0,1,1,0,0,0,1,1,1,0,0,0) # BIT(8)
 HEADING = (
     'PROGRAMS AND TASKS SCHEDULED    PROGRAMS AND TASKS TERMINATED   ' + \
     'PROGRAMS AND TASKS CANCELLED    EVENTS SIGNALLED, SET OR RESET  ' + \
@@ -113,7 +113,7 @@ def BLOCK_SUMMARY():
 
     def INDIRECT():
         # No Locals
-        nonlocal I, J, PTR, HEADER_ISSUED, FIRST_TIME
+        nonlocal PTR
         if g.SYT_CLASS(PTR) != g.LABEL_CLASS: 
             return;
         while g.SYT_TYPE(PTR) == g.IND_CALL_LAB:
@@ -122,7 +122,7 @@ def BLOCK_SUMMARY():
     
     def ISSUE_HEADER():
         # No locals
-        nonlocal I, J, PTR, HEADER_ISSUED, FIRST_TIME
+        nonlocal HEADER_ISSUED, FIRST_TIME
         if HEADER_ISSUED: 
             return;
         if FIRST_TIME:
@@ -136,9 +136,8 @@ def BLOCK_SUMMARY():
     
     def OUTPUT_IDENT(FLAG):
         # No locals
-        nonlocal I, J, PTR, HEADER_ISSUED, FIRST_TIME
         ISSUE_HEADER();
-        if FLAG:
+        if (FLAG & 1) != 0:
             if PTR == 0x3FFF: 
                 g.S = '*:*';
             else: 
@@ -162,10 +161,9 @@ def BLOCK_SUMMARY():
     
     def CHECK_IDENT():
         # No locals
-        nonlocal I, J, PTR, HEADER_ISSUED, FIRST_TIME
         if g.SYT_NEST(PTR) >= g.NEST: 
             return;
-        if MASK2[I]: 
+        if 0 != (1 & MASK2[I]): 
             if g.SYT_NEST(PTR) > 0: 
                 return;
         if MASK[I] != 0: 
@@ -173,15 +171,12 @@ def BLOCK_SUMMARY():
                 return; 
             else: 
                 g.TEMP1 = 0;
-            OUTPUT_IDENT(g.TEMP1 & 6);
+        OUTPUT_IDENT(g.TEMP1 & 6);
         g.OUTER_REF(J, -1);
     # END CHECK_IDENT;
     
     def OUT_BLOCK_SUMMARY():
-        # No locals.  I have replaced references like CLASS(I) by 
-        # TYPE(I+10), in lieu of defining a new function g.CLASSf() just for
-        # a couple of instances.  See the comments for g.TYPEf().
-        nonlocal I, J, PTR, HEADER_ISSUED, FIRST_TIME
+        nonlocal J, PTR
         for J in range(g.OUTER_REF_PTR[g.NEST] & 0x7FFF, g.OUTER_REF_INDEX + 1):
             if g.OUTER_REF(J) == -1: 
                 pass  # GO TO NEXT_ENTRY;
@@ -189,22 +184,22 @@ def BLOCK_SUMMARY():
                 PTR = g.OUTER_REF(J);
                 g.TEMP1 = g.OUTER_REF_FLAGS(J);
                 if g.TEMP1 == 0:
-                    if g.TYPEf(I + 10) == 0: 
+                    if CLASS[I] == 0: 
                         OUTPUT_IDENT(g.TRUE);
                         g.OUTER_REF(J, -1);
                 else: 
                     INDIRECT();
-                    if g.SYT_CLASS(PTR) <= g.TYPEf(I + 10):
+                    if g.SYT_CLASS(PTR) <= CLASS[I]:
                         # DO CASE CONDITION(I);
                         ci = CONDITION[I]
                         if ci == 0:
-                            if g.SYT_TYPE(PTR) == g.TYPEf(I): 
+                            if g.SYT_TYPE(PTR) == TYPE[I]: 
                                 CHECK_IDENT();
                         elif ci == 1:
-                            if g.SYT_TYPE(PTR) >= g.TYPEf(I): 
+                            if g.SYT_TYPE(PTR) >= TYPE[I]: 
                                 CHECK_IDENT();
                         elif ci == 2:
-                            if g.SYT_CLASS(PTR) == g.TYPEf(I + 10): 
+                            if g.SYT_CLASS(PTR) == CLASS[I]: 
                                 CHECK_IDENT();
                         # END DO CASE
             # NEXT_ENTRY:

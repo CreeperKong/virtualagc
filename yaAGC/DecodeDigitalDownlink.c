@@ -29,42 +29,115 @@
  
   Filename:	DecodeDownlinkList.c
   Purpose:	The DecodeDigitalDownlink function can be used to print out
-			a downlink list.  Simply keep feeding it data from channel
-			013, 034, and 035 as the data arrives.
+		a downlink list.  Simply keep feeding it data from channel
+		013, 034, and 035 as the data arrives.
   Compiler:	GNU gcc.
   Contact:	Ron Burkey <info@sandroid.org>
   Ref:		http://www.ibiblio.org/apollo/index.html
   Mods:		06/27/05 RSB.	Began.
-			06/28/05 RSB.	Rewrote a lot to base the printing on
-							arrays of specifications.
-			06/30/05 RSB	Now completely configurable at runtime.
-			07/01/05 RSB	Now *even more* completely configurable at
-							runtime.  Finished LM Coast/Align.
-			07/03/05 RSB	Removed the LeftShift and Mask table
-							parameters, and replaced with a user-
-							definable formatting function.  Completed
-							the LM Orbital Maneuvers downlist.
-							Completed LM Surface Align downlist.
-							Completed LM Rendezvous/Prethrust downlist.
-							Completed LM Descent/Ascent downlist.
-			07/26/05 RSB	Corrected scaling for all SP quantities.
-							(Oops!)  Added CM Powered List..
-			07/27/05 RSB	Added CM Program 22 list.
-			07/28/05 RSB	Added remainder of CM downlink lists.
-			04/07/09 RSB	Added ProcessDownlinkList for overriding
-							PrintDownlinkList.  The idea is that its
-							default is NULL, in which case PrintDownlinkList
-							is used.  If non-NULL, then whateverit points
-							to is used in place of PrintDownlinkList.
-			11/22/10 RSB    Eliminated a compiler warning I suddenly
-                            encountered in Ubuntu 10.04.
+		06/28/05 RSB.	Rewrote a lot to base the printing on
+				arrays of specifications.
+		06/30/05 RSB	Now completely configurable at runtime.
+		07/01/05 RSB	Now *even more* completely configurable at
+				runtime.  Finished LM Coast/Align.
+		07/03/05 RSB	Removed the LeftShift and Mask table
+				parameters, and replaced with a user-
+				definable formatting function.  Completed
+				the LM Orbital Maneuvers downlist.
+				Completed LM Surface Align downlist.
+				Completed LM Rendezvous/Prethrust downlist.
+				Completed LM Descent/Ascent downlist.
+		07/26/05 RSB	Corrected scaling for all SP quantities.
+				(Oops!)  Added CM Powered List..
+		07/27/05 RSB	Added CM Program 22 list.
+		07/28/05 RSB	Added remainder of CM downlink lists.
+		04/07/09 RSB	Added ProcessDownlinkList for overriding
+				PrintDownlinkList.  The idea is that its
+				default is NULL, in which case PrintDownlinkList
+				is used.  If non-NULL, then whateverit points
+				to is used in place of PrintDownlinkList.
+		11/22/10 RSB    Eliminated a compiler warning I suddenly
+				encountered in Ubuntu 10.04.
+		03/03/25 RSB	Added `dddConfigure`.
+		03/06/25 RSB	Some corrections (or at least changes) to the
+				hard-coded downlist specifications.
+				Changed interpretation of { -1 } spacers in
+				downlists.
+		03/08/25 RSB	Increased the width of displayed fields from 20
+				to 24.  (See `DISPLAYED_FIELD_WIDTH`.)  The
+				new `USE_COLONS` constant can be used to switch
+				between the formats VARIABLE=VALUE and
+				VARIABLE: VALUE at compile time.
+		03/11/25 RSB	Altered on the basis of SHOW_WORD_NUMBERS in
+				agc_engine.h.
+		04/03/25 RSB	Added AGC software-version aliasing.
+		04/20/25 RSB	Substantial rework in order to support additional
+				downlist protocols.  Just Sunburst 120 added
+				so far.
+		04/30/25 RSB	Had to completely rework globbing over
+				ddd-*-ALIAS.tsv, since Msys2 in Windows had
+				no equivalent for the glob.h `glob` function.
+		05/03/25 RSB	Added FMT_2DECL (little-endian double precision)
+				and double-precision aligned at odd addresses.
   
 */
 
 #define DECODE_DIGITAL_DOWNLINK_C
+#include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 #include "agc_engine.h"
+
+// Unfortunately, Msys2 in Windows has no equivalent for the `glob` function
+// or for glob.h.  Our needs are very modest, namely finding all files with
+// names of the form "ddd-*-%s.tsv".  We can put pretty hard ceilings on the
+// total number of these files we'll ever have in the future, and on their
+// string-lengths.  So my workaround is to have an array of filenames that we
+// can use either `glob` or the Windows equivalent to populate.
+#define MAX_TSV_FILES 10 // Per %s, actual limit is 6.
+#define MAX_TSV_STRING_LENGTH 40 // Only 28 at present, and probably no more ever.
+char tsvFiles[MAX_TSV_FILES][MAX_TSV_STRING_LENGTH];
+int numTsvFiles = 0;
+#ifdef WIN32
+#include <windows.h>
+void
+findTsvFiles(char *aliasTsv)
+{
+  char pattern[64];
+  sprintf(pattern, "ddd-*-%s.tsv", aliasTsv);
+  numTsvFiles = 0;
+  // Adapted from what the google AI returned for the search
+  // "windows replacement for linux glob function in C".
+  WIN32_FIND_DATA find_data;
+  HANDLE hFind = INVALID_HANDLE_VALUE;
+  hFind = FindFirstFile(pattern, &find_data);
+  if (hFind == INVALID_HANDLE_VALUE)
+    return; // Nothing found.
+  do
+    strcpy(tsvFiles[numTsvFiles++], find_data.cFileName);
+  while (FindNextFile(hFind, &find_data) != 0 && numTsvFiles < MAX_TSV_FILES);
+  FindClose(hFind);
+}
+#else
+#include <glob.h>
+void
+findTsvFiles(char *aliasTsv)
+{
+  glob_t globResult;
+  char globPattern[64];
+  numTsvFiles = 0;
+  sprintf(globPattern, "ddd-*-%s.tsv", aliasTsv);
+  if (0 != glob(globPattern, 0, NULL, &globResult))
+    return; // Nothing found.
+  for (;
+       numTsvFiles < globResult.gl_pathc && numTsvFiles < MAX_TSV_FILES;
+       numTsvFiles++)
+    strcpy(tsvFiles[numTsvFiles], globResult.gl_pathv[numTsvFiles]);
+  globfree(&globResult);
+}
+#endif
+
+#define DEBUG_DOWNLIST_SPEC_FILES
 
 //#define FLOAT_SCALE (1.0 / 0x10000000)
 #define FLOAT_SCALE (1.0 / 02000000000)
@@ -249,7 +322,7 @@ FormatGtc (int IndexIntoList, int Scale, Format_t Format)
 static char *
 FormatAdotsOrOga (int IndexIntoList, int Scale, Format_t Format)
 {
-  static char Unknown[] = "(unknown)";
+  static char Unknown[] = "(Not RCS/TVC)";
   int Flagword6, Dapdatr1, Flagword9;
   double fScale, x;
   x = GetDP (&DownlinkListBuffer[IndexIntoList], 1);
@@ -277,6 +350,16 @@ FormatAdotsOrOga (int IndexIntoList, int Scale, Format_t Format)
   else				// No DAP
     return (Unknown);
   sprintf (DefaultFormatBuffer, "%.10g", fScale * x);
+  return (DefaultFormatBuffer);
+}
+
+// CM CDUT
+static char *
+FormatCDUT (int IndexIntoList, int Scale, Format_t Format)
+{
+  double x;
+  x = GetDP (&DownlinkListBuffer[IndexIntoList], Scale);
+  sprintf (DefaultFormatBuffer, "%.10g", x + 19.7754);
   return (DefaultFormatBuffer);
 }
 
@@ -369,1524 +452,609 @@ Swrite (void)
 }
 
 // Clear the screen buffer.
-static int LastRow = 1, LastCol = 0;
+static int LastRow = 1, LastCol = 1;
 static void
 Sclear (void)
 {
   int i, j;
   LastRow = 1;
-  LastCol = 0;
+  LastCol = 1;
   for (i = 0; i < Sheight; i++)
     for (j = 0; j < Swidth; j++)
       Sbuffer[i][j] = ' ';  
 }
 
 //---------------------------------------------------------------------------
-// Specifications for the DEFAULT downlink lists.  Changing the names or formats
-// of the downlink-list fields, or changing their screen positions, is just
-// a matter of editing the following lists.
+// Definitions of the allowed downlink types for the given AGC software
+// version.  The list is set up by `dddConfigure`.
 
-static DownlinkListSpec_t CmPoweredListSpec = {
-  "LM Powered downlink list",
-  {
-    { 0, "ID=", B0, FMT_OCT },
-    { 1, "SYNC=", B0, FMT_OCT },
-    { 100, "TIME=", B28, FMT_DP },
-    { -1 },
-    { 2, "RN=", B29, FMT_DP },
-    { 4, "RN+2=", B29, FMT_DP },
-    { 6, "RN+4=", B29, FMT_DP },
-    { -1 },
-    { 8, "VN=", B7, FMT_DP },
-    { 10, "VN+2=", B7, FMT_DP },
-    { 12, "VN+4=", B7, FMT_DP },
-    { 14, "PIPTIME=", B28, FMT_DP },
-    { 16, "CDUX=", 360, FMT_SP },
-    { 17, "CDUY=", 360, FMT_SP },
-    { 18, "CDUZ=", 360, FMT_SP },
-    { 19, "CDUT=", B0, FMT_2OCT },	// Confused about this one.
-    { 20, "ADOT=", 450, FMT_DP, &FormatAdotsOrOga },
-    { 22, "ADOT+2=", 450, FMT_DP, &FormatAdotsOrOga },
-    { 24, "ADOT+4=", 450, FMT_DP, &FormatAdotsOrOga },
-    { -1 },
-    { 26, "AK=", 180, FMT_SP },
-    { 27, "AK1=", 180, FMT_SP },
-    { 28, "AK2=", 180, FMT_SP }, 
-    { 29, "RCSFLAGS=", B0, FMT_OCT },
-    { 30, "THETADX=", 360, FMT_USP },
-    { 31, "THETADY=", 360, FMT_USP },
-    { 32, "THETADZ=", 360, FMT_USP },
-    { 34, "TIG=", B28, FMT_DP },
-    { 36, "DELLT4=", B28, FMT_DP },
-    { 38, "RTARG=", B29, FMT_DP },
-    { 40, "RTARG+2=", B29, FMT_DP },
-    { 42, "RTARG+4=", B29, FMT_DP },
-    { 44, "TGO=", B28, FMT_DP },
-    { 46, "PIPTIME1=", B28, FMT_DP },
-    { -1 }, { -1 },
-    { 48, "DELV=", B14, FMT_DP, &FormatDELV },
-    { 50, "DELV+2=", B14, FMT_DP, &FormatDELV },
-    { 52, "DELV+4=", B14, FMT_DP, &FormatDELV },
-    { -1 },
-    { 54, "PACTOFF=", B14, FMT_SP, &FormatXACTOFF },
-    { 55, "YACTOFF=", B14, FMT_SP, &FormatXACTOFF },
-    { 56, "PCMD=", B14, FMT_SP, &FormatXACTOFF },
-    { 57, "YCMD=", B14, FMT_SP, &FormatXACTOFF },
-    { 58, "CSTEER=", 4, FMT_SP },
-    { 60, "DELVEET1=", B7, FMT_DP },
-    { -1 }, { -1 },
-    { 66, "REFSMMAT=", 2, FMT_DP },
-    { 68, "REFSMMAT+2=", 2, FMT_DP },
-    { 70, "REFSMMAT+4=", 2, FMT_DP },
-    { 72, "REFSMMAT+6=", 2, FMT_DP },
-    { 74, "REFSMMAT+8=", 2, FMT_DP },
-    { 76, "REFSMMAT+10=", 2, FMT_DP },
-    { -1 }, { -1 },
-    { 78, "STATE=", B0, FMT_2OCT },
-    { 80, "STATE+2=", B0, FMT_2OCT },
-    { 82, "STATE+4=", B0, FMT_2OCT },
-    { 84, "STATE+6=", B0, FMT_2OCT },
-    { 86, "STATE+8=", B0, FMT_2OCT },
-    { -1 },
-    { 88, "DSPTB=", B0, FMT_OCT },
-    { 90, "DSPTB+2=", B0, FMT_2OCT },
-    { 92, "DSPTB+4=", B0, FMT_2OCT },
-    { 94, "DSPTB+6=", B0, FMT_2OCT },
-    { 96, "DSPTB+8=", B0, FMT_2OCT },
-    { 98, "DSPTB+10=", B0, FMT_2OCT },
-    { 102, "R-OTHER=", B29, FMT_DP },
-    { 104, "R-OTHER+2=", B29, FMT_DP },
-    { 106, "R-OTHER+4=", B29, FMT_DP },
-    { -1 },
-    { 108, "V-OTHER=", B7, FMT_DP },
-    { 110, "V-OTHER+2=", B7, FMT_DP },
-    { 112, "V-OTHER+4=", B7, FMT_DP },
-    { 114, "T-OTHER=", B28, FMT_DP },
-    { 134, "RSBBQ=", B0, FMT_2OCT },
-    { 137, "CHAN77=", B0, FMT_OCT },
-    { 138, "C31FLWRD=", B0, FMT_OCT },
-    { -1 },
-    { 139, "FAILREG=", B0, FMT_OCT },
-    { 140, "FAILREG+1=", B0, FMT_OCT },
-    { 141, "FAILREG+2=", B0, FMT_OCT },
-    { 142, "CDUS=", 360, FMT_SP },
-    { 143, "PIPAX=", B14, FMT_SP },
-    { 144, "PIPAY=", B14, FMT_SP },
-    { 145, "PIPAZ=", B14, FMT_SP },
-    { 146, "ELEV=", 360, FMT_DP },
-    { 148, "CENTANG=", 360, FMT_DP },
-    { 150, "OFFSET=", B29, FMT_DP },
-    { 152, "STATE+10=", B0, FMT_2OCT },
-    { 154, "TEVENT=", B28, FMT_DP },
-    { 158, "OPTMODES=", B0, FMT_OCT },
-    { 159, "HOLDFLAG=", B0, FMT_DEC },
-    { 160, "LEMMASS=", B16, FMT_SP },
-    { 161, "CSMMASS=", B16, FMT_SP },
-    { 162, "DAPDATR1=", B0, FMT_OCT },
-    { 163, "DAPDATR2=", B0, FMT_OCT },
-    { -1 }, { -1 },
-    { 164, "ERRORX=", 180, FMT_SP },
-    { 165, "ERRORY=", 180, FMT_SP },
-    { 166, "ERRORZ=", 180, FMT_SP },
-    { -1 },
-    { 168, "WBODY=", 450, FMT_DP, &FormatAdotsOrOga },
-    { 170, "WBODY+2=", 450, FMT_DP, &FormatAdotsOrOga },
-    { 172, "WBODY+4=", 450, FMT_DP, &FormatAdotsOrOga },
-    { 174, "REDOCTR=", B0, FMT_DEC },
-    { 175, "THETAD=", 360, FMT_SP },
-    { 176, "THETAD+1=", 360, FMT_SP },
-    { 177, "THETAD+2=", 360, FMT_SP },
-    { -1 },
-    { 178, "IMODES30=", B0, FMT_OCT },
-    { 179, "IMODES33=", B0, FMT_OCT },
-    { -1 },
-    { -1 },
-    { 180, "CHN11,12=", B0, FMT_2OCT },
-    { 182, "CHN13,14=", B0, FMT_2OCT },
-    { 184, "CHN30,31=", B0, FMT_2OCT },
-    { 186, "CHN32,33=", B0, FMT_2OCT },
-    { 188, "VGTIG=", B7, FMT_DP },
-    { 190, "VGTIG+2=", B7, FMT_DP },
-    { 192, "VGTIG+4=", B7, FMT_DP },
-    { -1 },
-    { 194, "DELVEET2=", B7, FMT_DP },
-    { 196, "DELVEET2+2=", B7, FMT_DP },
-    { 198, "DELVEET2+4=", B7, FMT_DP }    
-  }
-};
+#define MAX_DOWNLISTS 10
+int numDownlists = 0;
+DownlinkListSpec_t DownlistSpecifications[MAX_DOWNLISTS] = { { 0 } };
 
-static DownlinkListSpec_t LmOrbitalManeuversSpec = {
-  "LM Orbital Maneuvers downlink list",
-  {
-    { 0, "ID=", B0, FMT_OCT },
-    { 1, "SYNC=", B0, FMT_OCT },
-    { 100, "TIME=", B28, FMT_DP },
-    { -1 },
-    { 2, "R-OTHER=", B29, FMT_DP },
-    { 4, "R-OTHER+2=", B29, FMT_DP },
-    { 6, "R-OTHER+4=", B29, FMT_DP },
-    { -1 },
-    { 8, "V-OTHER=", B7, FMT_DP },
-    { 10, "V-OTHER+2=", B7, FMT_DP },
-    { 12, "V-OTHER+4=", B7, FMT_DP },
-    { 14, "T-OTHER=", B28, FMT_DP },
-    { 16, "DELLT4=", B28, FMT_DP },
-    { 18, "RTARGX=", B29, FMT_DP },
-    { 20, "RTARGY=", B29, FMT_DP },
-    { 22, "RTARGZ=", B29, FMT_DP },
-    { 24, "ELEV=", 360, FMT_DP },
-    { 26, "TEVENT=", B28, FMT_DP },
-    { -1 }, { -1 },
-    { 28, "REFSMMAT=", B0, FMT_DP },
-    { 30, "REFSMMAT+2=", B0, FMT_DP },
-    { 32, "REFSMMAT+4=", B0, FMT_DP },
-    { 34, "REFSMMAT+6=", B0, FMT_DP },
-    { 36, "REFSMMAT+8=", B0, FMT_DP },
-    { 38, "REFSMMAT+10=", B0, FMT_DP },
-    { -1 }, { -1 },
-    { 40, "TCSI=", B28, FMT_DP },
-    { 42, "DELVEET1=", B7, FMT_DP },
-    { 44, "DELVEET1+2=", B7, FMT_DP },
-    { 46, "DELVEET1+4=", B7, FMT_DP },
-    { 48, "VGTIG=", B7, FMT_DP },
-    { 50, "VGTIG+2=", B7, FMT_DP },
-    { 52, "VGTIG+4=", B7, FMT_DP },
-    { -1 },
-    { 54, "DNLRVELZ=", B27, FMT_SP, &FormatLrVz },
-    { 56, "DNLRALT=", B27, FMT_SP, &FormatLrRange },
-    { 58, "REDOCTR=", B0, FMT_DEC },
-    { -1 },
-    { 59, "THETAD=", 360, FMT_SP },
-    { 60, "THETAD+1=", 360, FMT_SP },
-    { 61, "THETAD+2=", 360, FMT_SP },
-    { -1 },
-    { 62, "RSBBQ=", B0, FMT_OCT },
-    { 63, "RSBBQ+1=", B0, FMT_OCT },
-    { -1 }, { -1 },
-    { 64, "OMEGAP=", 45, FMT_SP },
-    { 65, "OMEGAQ=", 45, FMT_SP },
-    { 66, "OMEGAR=", 45, FMT_SP },
-    { -1 },
-    { 68, "CDUXD=", 360, FMT_SP },
-    { 69, "CDUYD=", 360, FMT_SP },
-    { 70, "CDUZD=", 360, FMT_SP },
-    { -1 },
-    { 72, "CDUX=", 360, FMT_SP },
-    { 73, "CDUY=", 360, FMT_SP },
-    { 74, "CDUZ=", 360, FMT_SP },
-    { 75, "CDUT=", 360, FMT_SP },
-    { 76, "STATE=", B0, FMT_2OCT },
-    { 78, "STATE+2=", B0, FMT_2OCT },
-    { 80, "STATE+4=", B0, FMT_2OCT },
-    { 82, "STATE+6=", B0, FMT_2OCT },
-    { 84, "STATE+8=", B0, FMT_2OCT },
-    { 86, "STATE+10=", B0, FMT_2OCT },
-    { -1 }, { -1 },
-    { 88, "DSPTB=", B0, FMT_OCT },
-    { 90, "DSPTB+2=", B0, FMT_2OCT },
-    { 92, "DSPTB+4=", B0, FMT_2OCT },
-    { 94, "DSPTB+6=", B0, FMT_2OCT },
-    { 96, "DSPTB+8=", B0, FMT_2OCT },
-    { 98, "DSPTB+10=", B0, FMT_2OCT },
-    { -1 }, { -1 },
-    { 102, "RN=", B29, FMT_DP },
-    { 104, "RN+2=", B29, FMT_DP },
-    { 106, "RN+4=", B29, FMT_DP },
-    { -1 },
-    { 108, "VN=", B7, FMT_DP },
-    { 110, "VN+2=", B7, FMT_DP },
-    { 112, "VN+4=", B7, FMT_DP },
-    { 114, "PIPTIME=", B28, FMT_DP },
-    { 116, "OMEGAPD=", 45, FMT_SP },
-    { 117, "OMEGAQD=", 45, FMT_SP },
-    { 118, "OMEGARD=", 45, FMT_SP },
-    { -1 },
-    { 120, "CADRFLSH=", B0, FMT_OCT },
-    { 121, "CADRFLSH+1=", B0, FMT_OCT },
-    { 122, "CADRFLSH+2=", B0, FMT_OCT },
-    { -1 },
-    { 123, "FAILREG=", B0, FMT_OCT },
-    { 124, "FAILREG+1=", B0, FMT_OCT },
-    { 125, "FAILREG+2=", B0, FMT_OCT },
-    { -1 },
-    { 126, "RADMODES=", B0, FMT_OCT },
-    { 127, "DAPBOOLS=", B0, FMT_OCT },
-    { -1 }, { -1 },
-    { 128, "POSTORKU=", 32, FMT_DEC },
-    { 129, "NEGTORKU=", 32, FMT_DEC },
-    { 130, "POSTORKV=", 32, FMT_DEC },
-    { 131, "NEGTORKV=", 32, FMT_DEC },
-    { 134, "TCDH=", B28, FMT_DP },
-    { 136, "DELVEET2=", B7, FMT_DP },
-    { 138, "DELVEET2+2=", B7, FMT_DP },
-    { 140, "DELVEET2+4=", B7, FMT_DP },
-    { 142, "TTPI=", B28, FMT_DP },
-    { 144, "DELVEET3=", B7, FMT_DP },
-    { 146, "DELVEET3+2=", B7, FMT_DP },
-    { 148, "DELVEET3+4=", B7, FMT_DP },
-    { 150, "DNRRANGE=", B0, FMT_SP, &FormatRrRange },
-    { 151, "DNRRDOT=", B0, FMT_SP, &FormatRrRangeRate },
-    { -1 }, { -1 },
-    { 152, "DNLRVELX=", B27, FMT_SP, &FormatLrVx },
-    { 153, "DNLRVELY=", B27, FMT_SP, &FormatLrVy },
-    { 154, "DNLRVELZ=", B27, FMT_SP, &FormatLrVz },
-    { 155, "DNLRALT=", B27, FMT_SP, &FormatLrRange },
-    { 156, "DIFFALT=", B29, FMT_DP },
-    { 158, "LEMMASS=", B16, FMT_SP },
-    { 159, "CSMMASS=", B16, FMT_SP },
-    { -1 },
-    { 160, "IMODES30=", B0, FMT_OCT },
-    { 161, "IMODES33=", B0, FMT_OCT },
-    { -1 }, { -1 },
-    { 162, "TIG=", B28, FMT_DP },    
-    { 164, "OMEGAP=", 45, FMT_SP },
-    { 165, "OMEGAQ=", 45, FMT_SP },
-    { 166, "OMEGAR=", 45, FMT_SP },
-    { 176, "ALPHAQ=", 90, FMT_SP },
-    { 177, "ALPHAR=", 90, FMT_SP },
-    { 178, "POSTORKP=", 32, FMT_DEC },
-    { 179, "NEGTORKP=", 32, FMT_DEC },
-    { 180, "CHN11,12=", B0, FMT_2OCT },
-    { 182, "CHN13,14=", B0, FMT_2OCT },
-    { 184, "CHN30,31=", B0, FMT_2OCT },
-    { 186, "CHN32,33=", B0, FMT_2OCT },
-    { 188, "PIPTIME1=", B28, FMT_DP },
-    { 190, "DELV=", B14, FMT_DP },
-    { 192, "DELV+2=", B14, FMT_DP },
-    { 194, "DELV+4=", B14, FMT_DP },
-    { 198, "TGO=", B28, FMT_DP }
-  }
-};
+//---------------------------------------------------------------------------
+/*
+ * Perform certain manipulations on a `DownlinkListSpec_t` structure to
+ * improve the viewing experience.  The potential cleanups are as follows,
+ * though in the sober light of day, I realize that not all of them make
+ * good sense and thus have either not implemented them or else disabled them
+ * after implementing them:
+ *
+ *   1.	Remove all "spacer" elements.  Those were created manually, were never
+ *   	thoroughly checked, and are difficult to maintain.  Not to mention, they
+ *   	conflict with some of the operations below.
+ *   2.	Whenever a set of variables like VARIABLE and VARIABLE+n are found,
+ *   	bubble them around so that they're both contiguous and in order of
+ *   	increasing n (where VARIABLE is treated like VARIABLE+0).
+ *   3.	Whenever a set of at least two (possibly change this later to 3)
+ *   	consecutive variables VARIABLE, VARIABLE+n are found, insert a spacer
+ *   	element prior to the first one.
+ *   4.	Convert all spaces in variable names to underscores.
+ */
 
-static DownlinkListSpec_t CmCoastAlignSpec = {
-  "CM Coast Align downlink list",
-  {
-    { 0, "ID=", B0, FMT_OCT },
-    { 1, "SYNC=", B0, FMT_OCT },
-    { 100, "TIME=", B28, FMT_DP },
-    { -1 },
-    { 2, "RN=", B29, FMT_DP },
-    { 4, "RN+2=", B29, FMT_DP },
-    { 6, "RN+4=", B29, FMT_DP },
-    { -1 },
-    { 8, "VN=", B7, FMT_DP },
-    { 10, "VN+2=", B7, FMT_DP },
-    { 12, "VN+4=", B7, FMT_DP },
-    { 14, "PIPTIME=", B28, FMT_DP },
-    { 16, "CDUX=", 360, FMT_SP },
-    { 17, "CDUY=", 360, FMT_SP },
-    { 18, "CDUZ=", 360, FMT_SP },
-    { 19, "CDUT=", B0, FMT_2OCT },	// Confused about this one.
-    { 20, "ADOT=", 450, FMT_DP, &FormatAdotsOrOga },
-    { 22, "ADOT+2=", 450, FMT_DP, &FormatAdotsOrOga },
-    { 24, "ADOT+4=", 450, FMT_DP, &FormatAdotsOrOga },
-    { -1 },
-    { 26, "AK=", 180, FMT_SP },
-    { 27, "AK1=", 180, FMT_SP },
-    { 28, "AK2=", 180, FMT_SP }, 
-    { 29, "RCSFLAGS=", B0, FMT_OCT },
-    { 30, "THETADX=", 360, FMT_USP },
-    { 31, "THETADY=", 360, FMT_USP },
-    { 32, "THETADZ=", 360, FMT_USP },
-    { 34, "TIG=", B28, FMT_DP },
-    { 36, "BESTI=", 6, FMT_DEC },
-    { 37, "BESTJ=", 6, FMT_DEC },
-    { 38, "MARKDOWN=", B28, FMT_DP },
-    { 40, "MARKDOWN+2=", 360, FMT_USP },
-    { 41, "MARKDOWN+3=", 360, FMT_USP },
-    { 42, "MARKDOWN+4=", 360, FMT_USP },
-    { 43, "MARKDOWN+5=", 360, FMT_USP },
-    { 44, "MARKDOWN+6=", 45, FMT_SP, &FormatOTRUNNION },
-    { 46, "MARK2DWN=", B28, FMT_DP },
-    { 48, "MARK2DWN+2=", 360, FMT_USP },
-    { 49, "MARK2DWN+3=", 360, FMT_USP },
-    { 50, "MARK2DWN+4=", 360, FMT_USP },
-    { 51, "MARK2DWN+5=", 360, FMT_USP },
-    { 52, "MARK2DWN+6=", 45, FMT_SP, &FormatOTRUNNION },
-    { 54, "HAPOX=", B29, FMT_DP },
-    { 56, "HPERX=", B29, FMT_DP },
-    { 58, "DELTAR=", 360, FMT_DP },		// Differs between Colossus 1 & 3
-    { 58, "PACTOFF=", B14, FMT_SP, &FormatXACTOFF },
-    { 59, "YACTOFF=", B14, FMT_SP, &FormatXACTOFF },
-    { 60, "VGTIG=", B7, FMT_DP },
-    { 62, "VGTIG+2=", B7, FMT_DP },
-    { 64, "VGTIG+4=", B7, FMT_DP },
-    { 66, "REFSMMAT=", 2, FMT_DP },
-    { 68, "REFSMMAT+2=", 2, FMT_DP },
-    { 70, "REFSMMAT+4=", 2, FMT_DP },
-    { 72, "REFSMMAT+6=", 2, FMT_DP },
-    { 74, "REFSMMAT+8=", 2, FMT_DP },
-    { 76, "REFSMMAT+10=", 2, FMT_DP },
-    { 78, "STATE=", B0, FMT_2OCT },
-    { 80, "STATE+2=", B0, FMT_2OCT },
-    { 82, "STATE+4=", B0, FMT_2OCT },
-    { 84, "STATE+6=", B0, FMT_2OCT },
-    { 86, "STATE+8=", B0, FMT_2OCT },
-    { -1 },
-    { 88, "DSPTB=", B0, FMT_OCT },
-    { 90, "DSPTB+2=", B0, FMT_2OCT },
-    { 92, "DSPTB+4=", B0, FMT_2OCT },
-    { 94, "DSPTB+6=", B0, FMT_2OCT },
-    { 96, "DSPTB+8=", B0, FMT_2OCT },
-    { 98, "DSPTB+10=", B0, FMT_2OCT },
-    { 102, "R-OTHER=", B29, FMT_DP },
-    { 104, "R-OTHER+2=", B29, FMT_DP },
-    { 106, "R-OTHER+4=", B29, FMT_DP },
-    { -1 },
-    { 108, "V-OTHER=", B7, FMT_DP },
-    { 110, "V-OTHER+2=", B7, FMT_DP },
-    { 112, "V-OTHER+4=", B7, FMT_DP },
-    { 114, "T-OTHER=", B28, FMT_DP },
-    { 126, "OPTION1=", B0, FMT_OCT },	// Don't know what this is.
-    { 127, "OPTION2=", B0, FMT_OCT },	// .. or this
-    { 128, "TET=", B28, FMT_DP },	// ... or this
-    { 134, "RSBBQ=", B0, FMT_2OCT },
-    { 137, "CHAN77=", B0, FMT_OCT },
-    { 138, "C31FLWRD=", B0, FMT_OCT },
-    { -1 }, { -1 },
-    { 139, "FAILREG=", B0, FMT_OCT },
-    { 140, "FAILREG+1=", B0, FMT_OCT },
-    { 141, "FAILREG+2=", B0, FMT_OCT },
-    { 142, "CDUS=", 360, FMT_SP },
-    { 143, "PIPAX=", B14, FMT_SP },
-    { 144, "PIPAY=", B14, FMT_SP },
-    { 145, "PIPAZ=", B14, FMT_SP },
-    { -1 },
-    { 146, "OGC=", 360, FMT_DP },
-    { 148, "IGC=", 360, FMT_DP },
-    { 150, "MGC=", 360, FMT_DP },
-    { 152, "STATE+10=", B0, FMT_2OCT },
-    { 154, "TEVENT=", B28, FMT_DP },
-    { 156, "LAUNCHAZ=", 360, FMT_DP },
-    { 158, "OPTMODES=", B0, FMT_OCT },
-    { 159, "HOLDFLAG=", B0, FMT_DEC },
-    { 160, "LEMMASS=", B16, FMT_SP },
-    { 161, "CSMMASS=", B16, FMT_SP },
-    { 162, "DAPDATR1=", B0, FMT_OCT },
-    { 163, "DAPDATR2=", B0, FMT_OCT },
-    { 164, "ERRORX=", 180, FMT_SP },
-    { 165, "ERRORY=", 180, FMT_SP },
-    { 166, "ERRORZ=", 180, FMT_SP },
-    { -1 },
-    { 168, "WBODY=", 450, FMT_DP, &FormatAdotsOrOga },
-    { 170, "WBODY+2=", 450, FMT_DP, &FormatAdotsOrOga },
-    { 172, "WBODY+4=", 450, FMT_DP, &FormatAdotsOrOga },
-    { 174, "REDOCTR=", B0, FMT_DEC },
-    { 175, "THETAD=", 360, FMT_SP },
-    { 176, "THETAD+1=", 360, FMT_SP },
-    { 177, "THETAD+2=", 360, FMT_SP },
-    { -1 },
-    { 178, "IMODES30=", B0, FMT_OCT },
-    { 179, "IMODES33=", B0, FMT_OCT },
-    { -1 },
-    { -1 },
-    { 180, "CHN11,12=", B0, FMT_2OCT },
-    { 182, "CHN13,14=", B0, FMT_2OCT },
-    { 184, "CHN30,31=", B0, FMT_2OCT },
-    { 186, "CHN32,33=", B0, FMT_2OCT }
-  }
-};
+// Pop a `FieldSpec_t` at a given index in a `DownlinkListSpec_t` structure.
+// The return structure for the FieldSpec_t must have been pre-allocated.
+void
+dddPop(DownlinkListSpec_t *dls, int index, FieldSpec_t *fs)
+{
+  memcpy(fs, &(dls->FieldSpecs[index]), sizeof(FieldSpec_t));
+  if (index < MAX_DOWNLINK_LIST - 1)
+    memmove(&(dls->FieldSpecs[index]), &(dls->FieldSpecs[index + 1]),
+	sizeof(FieldSpec_t) * (MAX_DOWNLINK_LIST - 1 - index));
+  memset(&(dls->FieldSpecs[MAX_DOWNLINK_LIST - 1]), 0, sizeof(FieldSpec_t));
+}
 
-static DownlinkListSpec_t LmCoastAlignSpec = {
-  "LM Coast Align downlink list",
-  {
-    { 0, "ID=", B0, FMT_OCT },
-    { 1, "SYNC=", B0, FMT_OCT },
-    { 100, "TIME=", B28, FMT_DP },
-    { -1 },
-    { 2, "R-OTHER=", B29, FMT_DP },
-    { 4, "R-OTHER+2=", B29, FMT_DP },
-    { 6, "R-OTHER+4=", B29, FMT_DP },
-    { -1 },
-    { 8, "V-OTHER=", B7, FMT_DP },
-    { 10, "V-OTHER+2=", B7, FMT_DP },
-    { 12, "V-OTHER+4=", B7, FMT_DP },
-    { 14, "T-OTHER=", B28, FMT_DP },
-    { 16, "AGSK=", B28, FMT_DP },
-    { 18, "TALIGN=", B28, FMT_DP },
-    { -1 }, { -1 },
-    { 20, "POSTORKU=", 32, FMT_DEC },
-    { 21, "NEGTORKU=", 32, FMT_DEC },
-    { 22, "POSTORKV=", 32, FMT_DEC },
-    { 23, "NEGTORKV=", 32, FMT_DEC },
-    { 24, "DNRRANGE=", B0, FMT_SP, &FormatRrRange },
-    { 25, "DNRRDOT=", B0, FMT_SP, &FormatRrRangeRate },
-    { 26, "TEVENT=", B28, FMT_DP },
-    { -1 },
-    { 28, "REFSMMAT=", B0, FMT_DP },
-    { 30, "REFSMMAT+2=", B0, FMT_DP },
-    { 32, "REFSMMAT+4=", B0, FMT_DP },
-    { 34, "REFSMMAT+6=", B0, FMT_DP },
-    { 36, "REFSMMAT+8=", B0, FMT_DP },
-    { 38, "REFSMMAT+10=", B0, FMT_DP },
-    { -1 }, { -1 },
-    { 40, "AOTCODE=", B0, FMT_OCT },
-    { 42, "RLS=", B27, FMT_DP },
-    { 44, "RLS+2=", B27, FMT_DP },
-    { 46, "RLS+4=", B27, FMT_DP },
-    { 48, "DNLRVELX=", B27, FMT_SP, &FormatLrVx },
-    { 49, "DNLRVELY=", B27, FMT_SP, &FormatLrVy },
-    { 50, "DNLRVELZ=", B27, FMT_SP, &FormatLrVz },
-    { 51, "DNLRALT=", B27, FMT_SP, &FormatLrRange },
-    { 52, "VGTIG=", B7, FMT_DP },
-    { 54, "VGTIG+2=", B7, FMT_DP },
-    { 56, "VGTIG+4=", B7, FMT_DP },
-    // Same as LM Orbital Maneuvers.
-    { 58, "REDOCTR=", B0, FMT_DEC },
-    { 59, "THETAD=", 360, FMT_SP },
-    { 60, "THETAD+1=", 360, FMT_SP },
-    { 61, "THETAD+2=", 360, FMT_SP },
-    { -1 },
-    { 62, "RSBBQ=", B0, FMT_OCT },
-    { 63, "RSBBQ+1=", B0, FMT_OCT },
-    { -1 }, { -1 },
-    { 64, "OMEGAP=", 45, FMT_SP },
-    { 65, "OMEGAQ=", 45, FMT_SP },
-    { 66, "OMEGAR=", 45, FMT_SP },
-    { -1 },
-    { 68, "CDUXD=", 360, FMT_SP },
-    { 69, "CDUYD=", 360, FMT_SP },
-    { 70, "CDUZD=", 360, FMT_SP },
-    { -1 },
-    { 72, "CDUX=", 360, FMT_SP },
-    { 73, "CDUY=", 360, FMT_SP },
-    { 74, "CDUZ=", 360, FMT_SP },
-    { 75, "CDUT=", 360, FMT_SP },
-    { 76, "STATE=", B0, FMT_2OCT },
-    { 78, "STATE+2=", B0, FMT_2OCT },
-    { 80, "STATE+4=", B0, FMT_2OCT },
-    { 82, "STATE+6=", B0, FMT_2OCT },
-    { 84, "STATE+8=", B0, FMT_2OCT },
-    { 86, "STATE+10=", B0, FMT_2OCT },
-    { -1 }, { -1 },
-    { 88, "DSPTB=", B0, FMT_OCT },
-    { 90, "DSPTB+2=", B0, FMT_2OCT },
-    { 92, "DSPTB+4=", B0, FMT_2OCT },
-    { 94, "DSPTB+6=", B0, FMT_2OCT },
-    { 96, "DSPTB+8=", B0, FMT_2OCT },
-    { 98, "DSPTB+10=", B0, FMT_2OCT },
-    { -1 }, { -1 },
-    { 102, "RN=", B29, FMT_DP },
-    { 104, "RN+2=", B29, FMT_DP },
-    { 106, "RN+4=", B29, FMT_DP },
-    { -1 },
-    { 108, "VN=", B7, FMT_DP },
-    { 110, "VN+2=", B7, FMT_DP },
-    { 112, "VN+4=", B7, FMT_DP },
-    { 114, "PIPTIME=", B28, FMT_DP },
-    { 116, "OMEGAPD=", 45, FMT_SP },
-    { 117, "OMEGAQD=", 45, FMT_SP },
-    { 118, "OMEGARD=", 45, FMT_SP },
-    { -1 },
-    { 120, "CADRFLSH=", B0, FMT_OCT },
-    { 121, "CADRFLSH+1=", B0, FMT_OCT },
-    { 122, "CADRFLSH+2=", B0, FMT_OCT },
-    { -1 },
-    { 123, "FAILREG=", B0, FMT_OCT },
-    { 124, "FAILREG+1=", B0, FMT_OCT },
-    { 125, "FAILREG+2=", B0, FMT_OCT },
-    { -1 },
-    { 126, "RADMODES=", B0, FMT_OCT },
-    { 127, "DAPBOOLS=", B0, FMT_OCT },
-    //  
-    { -1 }, { -1 },
-    { 128, "OGC=", 360, FMT_DP },
-    { 130, "IGC=", 360, FMT_DP },
-    { 132, "MGC=", 360, FMT_DP },
-    { -1 },
-    { 134, "BESTI=", 6, FMT_DEC },
-    { 135, "BESTJ=", 6, FMT_DEC },
-    { 136, "STARSAV1=", 2, FMT_DP },	// Fix later.  
-    { 138, "STARSAV1+2=", 2, FMT_DP },	// Fix later.  
-    { 140, "STARSAV1+4=", 2, FMT_DP },	// Fix later.  
-    { 142, "STARSAV2=", 2, FMT_DP },	// Fix later.  
-    { 144, "STARSAV2+2=", 2, FMT_DP },	// Fix later.  
-    { 146, "STARSAV2+4=", 2, FMT_DP },	// Fix later.  
-    { 152, "CDUS=", 360, FMT_SP },
-    { 153, "PIPAX=", B14, FMT_SP },
-    { 154, "PIPAY=", B14, FMT_SP },
-    { 155, "PIPAZ=", B14, FMT_SP },
-    { 156, "LASTYCMD=", B0, FMT_OCT },
-    { 157, "LASTXCMD=", B0, FMT_OCT },
-    { 158, "LEMMASS=", B16, FMT_SP },
-    { 159, "CSMMASS=", B16, FMT_SP },
-    { 160, "IMODES30=", B0, FMT_OCT },
-    { 161, "IMODES33=", B0, FMT_OCT },
-    { 162, "TIG=", B28, FMT_DP },    
-    { -1 },
-    { 176, "ALPHAQ=", 90, FMT_SP },
-    { 177, "ALPHAR=", 90, FMT_SP },
-    { 178, "POSTORKP=", 32, FMT_DEC },
-    { 179, "NEGTORKP=", 32, FMT_DEC },
-    { 180, "CHN11,12=", B0, FMT_2OCT },
-    { 182, "CHN13,14=", B0, FMT_2OCT },
-    { 184, "CHN30,31=", B0, FMT_2OCT },
-    { 186, "CHN32,33=", B0, FMT_2OCT }
-  }
-};
+// Push a `FieldSpec_t` into a given index in a `DownlinkListSpec_t` structure.
+void
+dddPush(DownlinkListSpec_t *dls, int index, FieldSpec_t *fs)
+{
+  if (index < MAX_DOWNLINK_LIST - 1)
+    memmove(&(dls->FieldSpecs[index + 1]), &(dls->FieldSpecs[index]),
+	sizeof(FieldSpec_t) * (MAX_DOWNLINK_LIST - 1 - index));
+  memcpy(&(dls->FieldSpecs[index]), fs, sizeof(FieldSpec_t));
+}
 
-static DownlinkListSpec_t CmRendezvousPrethrustSpec = {
-  "CM Rendezvous/Prethrust downlink list",
-  {
-    { 0, "ID=", B0, FMT_OCT },
-    { 1, "SYNC=", B0, FMT_OCT },
-    { 100, "TIME=", B28, FMT_DP },
-    { -1 },
-    { 2, "RN=", B29, FMT_DP },
-    { 4, "RN+2=", B29, FMT_DP },
-    { 6, "RN+4=", B29, FMT_DP },
-    { -1 },
-    { 8, "VN=", B7, FMT_DP },
-    { 10, "VN+2=", B7, FMT_DP },
-    { 12, "VN+4=", B7, FMT_DP },
-    { 14, "PIPTIME=", B28, FMT_DP },
-    { 16, "CDUX=", 360, FMT_SP },
-    { 17, "CDUY=", 360, FMT_SP },
-    { 18, "CDUZ=", 360, FMT_SP },
-    { 19, "CDUT=", B0, FMT_2OCT },	// Confused about this one.
-    { 20, "ADOT=", 450, FMT_DP, &FormatAdotsOrOga },
-    { 22, "ADOT+2=", 450, FMT_DP, &FormatAdotsOrOga },
-    { 24, "ADOT+4=", 450, FMT_DP, &FormatAdotsOrOga },
-    { -1 },
-    { 26, "AK=", 180, FMT_SP },
-    { 27, "AK1=", 180, FMT_SP },
-    { 28, "AK2=", 180, FMT_SP }, 
-    { 29, "RCSFLAGS=", B0, FMT_OCT },
-    { 30, "THETADX=", 360, FMT_USP },
-    { 31, "THETADY=", 360, FMT_USP },
-    { 32, "THETADZ=", 360, FMT_USP },
-    { 34, "TIG=", B28, FMT_DP },
-    { 36, "DELLT4=", B28, FMT_DP },
-    { 38, "RTARG=", B29, FMT_DP },
-    { 40, "RTARG+2=", B29, FMT_DP },
-    { 42, "RTARG+4=", B29, FMT_DP },
-    { 44, "VHFTIME=", B28, FMT_DP },
-    { -1 },
-    { 46, "MARKDOWN=", B28, FMT_DP },
-    { 48, "MARKDOWN+2=", 360, FMT_USP },
-    { 49, "MARKDOWN+3=", 360, FMT_USP },
-    { 50, "MARKDOWN+4=", 360, FMT_USP },
-    { 51, "MARKDOWN+5=", 360, FMT_USP },
-    { 52, "MARKDOWN+6=", 45, FMT_SP, &FormatOTRUNNION },
-    { 53, "RM=", 100, FMT_DEC },
-    { 54, "VHFCNT=", B0, FMT_DEC },
-    { 55, "TRKMKCNT=", B0, FMT_DEC },
-    { 56, "TTPI=", B28, FMT_DP },
-    { 58, "ECSTEER=", 4, FMT_SP },
-    { 60, "DELVTPF=", B7, FMT_DP },
-    { 62, "TCDH=", B28, FMT_DP },
-    { 64, "TCSI=", B28, FMT_DP },
-    { 66, "TPASS4=", B28, FMT_DP },
-    { 68, "DELVSLV=", B7, FMT_DP },
-    { 70, "DELVSLV+2=", B7, FMT_DP },
-    { 72, "DELVSLV+4=", B7, FMT_DP },
-    { 74, "RANGE=", B29, FMT_DP },
-    { 76, "RRATE=", B7, FMT_DP },
-    { -1 }, { -1 },
-    { 78, "STATE=", B0, FMT_2OCT },
-    { 80, "STATE+2=", B0, FMT_2OCT },
-    { 82, "STATE+4=", B0, FMT_2OCT },
-    { 84, "STATE+6=", B0, FMT_2OCT },
-    { 86, "STATE+8=", B0, FMT_2OCT },
-    { -1 },
-    { 88, "DSPTB=", B0, FMT_OCT },
-    { 90, "DSPTB+2=", B0, FMT_2OCT },
-    { 92, "DSPTB+4=", B0, FMT_2OCT },
-    { 94, "DSPTB+6=", B0, FMT_2OCT },
-    { 96, "DSPTB+8=", B0, FMT_2OCT },
-    { 98, "DSPTB+10=", B0, FMT_2OCT },
-    { 102, "R-OTHER=", B29, FMT_DP },
-    { 104, "R-OTHER+2=", B29, FMT_DP },
-    { 106, "R-OTHER+4=", B29, FMT_DP },
-    { -1 },
-    { 108, "V-OTHER=", B7, FMT_DP },
-    { 110, "V-OTHER+2=", B7, FMT_DP },
-    { 112, "V-OTHER+4=", B7, FMT_DP },
-    { 114, "T-OTHER=", B28, FMT_DP },
-    { 126, "OPTION1=", B0, FMT_OCT },	// Don't know what this is.
-    { 127, "OPTION2=", B0, FMT_OCT },	// .. or this
-    { 128, "TET=", B28, FMT_DP },	// ... or this
-    { 134, "RSBBQ=", B0, FMT_2OCT },
-    { 137, "CHAN77=", B0, FMT_OCT },
-    { 138, "C31FLWRD=", B0, FMT_OCT },
-    { -1 }, { -1 },
-    { 139, "FAILREG=", B0, FMT_OCT },
-    { 140, "FAILREG+1=", B0, FMT_OCT },
-    { 141, "FAILREG+2=", B0, FMT_OCT },
-    { 142, "CDUS=", 360, FMT_SP },
-    { 143, "PIPAX=", B14, FMT_SP },
-    { 144, "PIPAY=", B14, FMT_SP },
-    { 145, "PIPAZ=", B14, FMT_SP }, 
-    { 146, "DIFFALT=", B0, FMT_2DEC },	// Don't yet know the scaling of this.
-    { 148, "CENTANG=", 360, FMT_DP },
-    { 152, "DELVEET3=", B7, FMT_DP },
-    { 154, "DELVEET3+2=", B7, FMT_DP },
-    { 156, "DELVEET3+4=", B7, FMT_DP },    
-    { 158, "OPTMODES=", B0, FMT_OCT },
-    { 159, "HOLDFLAG=", B0, FMT_DEC },
-    { 160, "LEMMASS=", B16, FMT_SP },
-    { 161, "CSMMASS=", B16, FMT_SP },
-    { 162, "DAPDATR1=", B0, FMT_OCT },
-    { 163, "DAPDATR2=", B0, FMT_OCT },
-    { -1 }, { -1 },
-    { 164, "ERRORX=", 180, FMT_SP },
-    { 165, "ERRORY=", 180, FMT_SP },
-    { 166, "ERRORZ=", 180, FMT_SP },
-    { -1 },
-    { 168, "WBODY=", 450, FMT_DP, &FormatAdotsOrOga },
-    { 170, "WBODY+2=", 450, FMT_DP, &FormatAdotsOrOga },
-    { 172, "WBODY+4=", 450, FMT_DP, &FormatAdotsOrOga },
-    { 174, "REDOCTR=", B0, FMT_DEC },
-    { 175, "THETAD=", 360, FMT_SP },
-    { 176, "THETAD+1=", 360, FMT_SP },
-    { 177, "THETAD+2=", 360, FMT_SP },
-    { -1 },
-    { 178, "IMODES30=", B0, FMT_OCT },
-    { 179, "IMODES33=", B0, FMT_OCT },
-    { -1 },
-    { -1 },
-    { 180, "CHN11,12=", B0, FMT_2OCT },
-    { 182, "CHN13,14=", B0, FMT_2OCT },
-    { 184, "CHN30,31=", B0, FMT_2OCT },
-    { 186, "CHN32,33=", B0, FMT_2OCT },
-    { 188, "RTHETA=", 360, FMT_DP },
-    { 190, "LAT(SPL)=", 360, FMT_DP },
-    { 192, "LNG(SPL)=", 360, FMT_DP },
-    { 194, "VPRED=", B7, FMT_DP },
-    { 196, "GAMMAEI=", 360, FMT_DP },
-    { 198, "STATE+10=", B0, FMT_2OCT }
-  }
-};
+// A comparison function for sorting the field-spec names.
+typedef struct {
+  char name[DISPLAYED_FIELD_WIDTH];
+  int index;
+} dddName_t;
+int
+dddCmp (const void *e1, const void *e2)
+{
+  dddName_t *s1 = (dddName_t *) e1, *s2 = (dddName_t *) e2;
+  int i;
 
-static DownlinkListSpec_t LmRendezvousPrethrustSpec = {
-  "LM Rendezvous/Prethrust downlink list",
-  {
-    { 0, "ID=", B0, FMT_OCT },
-    { 1, "SYNC=", B0, FMT_OCT },
-    { 100, "TIME=", B28, FMT_DP },
-    { -1 },
-    { 2, "R-OTHER=", B29, FMT_DP },
-    { 4, "R-OTHER+2=", B29, FMT_DP },
-    { 6, "R-OTHER+4=", B29, FMT_DP },
-    { -1 },
-    { 8, "V-OTHER=", B7, FMT_DP },
-    { 10, "V-OTHER+2=", B7, FMT_DP },
-    { 12, "V-OTHER+4=", B7, FMT_DP },
-    { 14, "T-OTHER=", B28, FMT_DP },
-    { 16, "RANGRDOT=", B0, FMT_2OCT },	// Look at this later.
-    { -1 }, { -1 }, { -1 },
-    { 18, "AIG=", 360, FMT_SP },
-    { 19, "AMG=", 360, FMT_SP },
-    { 20, "AOG=", 360, FMT_SP },
-    { 21, "TRKMKCNT=", B0, FMT_DEC },
-    { 22, "TANGNB=", 360, FMT_SP },
-    { 23, "TANGNB+1=", 360, FMT_SP },
-    { 24, "MARKTIME=", B28, FMT_DP },
-    { -1 },
-    { 26, "DELLT4=", B28, FMT_DP },
-    { 28, "RTARGX=", B29, FMT_DP },
-    { 30, "RTARGY=", B29, FMT_DP },
-    { 32, "RTARGZ=", B29, FMT_DP },
-    { 34, "DELVSLV=", B7, FMT_DP },   
-    { 36, "DELVSLV+2=", B7, FMT_DP },   
-    { 38, "DELVSLV+4=", B7, FMT_DP }, 
-    { -1 },
-    { 40, "TCSI=", B28, FMT_DP },
-    { 42, "DELVEET1=", B7, FMT_DP },
-    { 44, "DELVEET1+2=", B7, FMT_DP },
-    { 46, "DELVEET1+4=", B7, FMT_DP },
-    { 50, "TTPF=", B28, FMT_DP },
-    { 52, "X789=", B5, FMT_SP, FormatEarthOrMoonDP },
-    { 54, "X789+2=", B5, FMT_SP, FormatEarthOrMoonDP },
-    { -1 },
-    { 56, "LASTYCMD=", B0, FMT_DEC },
-    { 57, "LASTXCMD=", B0, FMT_DEC },
-    { 58, "REDOCTR=", B0, FMT_DEC },
-    { -1 },
-    { 59, "THETAD=", 360, FMT_SP },
-    { 60, "THETAD+1=", 360, FMT_SP },
-    { 61, "THETAD+2=", 360, FMT_SP },
-    { -1 },
-    { 62, "RSBBQ=", B0, FMT_OCT },
-    { 63, "RSBBQ+1=", B0, FMT_OCT },
-    { -1 }, { -1 },
-    { 64, "OMEGAP=", 45, FMT_SP },
-    { 65, "OMEGAQ=", 45, FMT_SP },
-    { 66, "OMEGAR=", 45, FMT_SP },
-    { -1 },
-    { 68, "CDUXD=", 360, FMT_SP },
-    { 69, "CDUYD=", 360, FMT_SP },
-    { 70, "CDUZD=", 360, FMT_SP },
-    { -1 },
-    { 72, "CDUX=", 360, FMT_SP },
-    { 73, "CDUY=", 360, FMT_SP },
-    { 74, "CDUZ=", 360, FMT_SP },
-    { 75, "CDUT=", 360, FMT_SP },
-    { 76, "STATE=", B0, FMT_2OCT },
-    { 78, "STATE+2=", B0, FMT_2OCT },
-    { 80, "STATE+4=", B0, FMT_2OCT },
-    { 82, "STATE+6=", B0, FMT_2OCT },
-    { 84, "STATE+8=", B0, FMT_2OCT },
-    { 86, "STATE+10=", B0, FMT_2OCT },
-    { -1 }, { -1 },
-    { 88, "DSPTB=", B0, FMT_OCT },
-    { 90, "DSPTB+2=", B0, FMT_2OCT },
-    { 92, "DSPTB+4=", B0, FMT_2OCT },
-    { 94, "DSPTB+6=", B0, FMT_2OCT },
-    { 96, "DSPTB+8=", B0, FMT_2OCT },
-    { 98, "DSPTB+10=", B0, FMT_2OCT },
-    { -1 }, { -1 },
-    { 102, "RN=", B29, FMT_DP },
-    { 104, "RN+2=", B29, FMT_DP },
-    { 106, "RN+4=", B29, FMT_DP },
-    { -1 },
-    { 108, "VN=", B7, FMT_DP },
-    { 110, "VN+2=", B7, FMT_DP },
-    { 112, "VN+4=", B7, FMT_DP },
-    { 114, "PIPTIME=", B28, FMT_DP },
-    { 116, "OMEGAPD=", 45, FMT_SP },
-    { 117, "OMEGAQD=", 45, FMT_SP },
-    { 118, "OMEGARD=", 45, FMT_SP },
-    { -1 },
-    { 120, "CADRFLSH=", B0, FMT_OCT },
-    { 121, "CADRFLSH+1=", B0, FMT_OCT },
-    { 122, "CADRFLSH+2=", B0, FMT_OCT },
-    { -1 },
-    { 123, "FAILREG=", B0, FMT_OCT },
-    { 124, "FAILREG+1=", B0, FMT_OCT },
-    { 125, "FAILREG+2=", B0, FMT_OCT },
-    { -1 },
-    { 126, "RADMODES=", B0, FMT_OCT },
-    { 127, "DAPBOOLS=", B0, FMT_OCT },
-    { -1 }, { -1 },
-    { 128, "POSTORKU=", 32, FMT_DEC },
-    { 129, "NEGTORKU=", 32, FMT_DEC },
-    { 130, "POSTORKV=", 32, FMT_DEC },
-    { 131, "NEGTORKV=", 32, FMT_DEC },
-    { 134, "TCDH=", B28, FMT_DP },
-    { 136, "DELVEET2=", B7, FMT_DP },
-    { 138, "DELVEET2+2=", B7, FMT_DP },
-    { 140, "DELVEET2+4=", B7, FMT_DP },
-    { 142, "TTPI=", B28, FMT_DP },
-    { 144, "DELVEET3=", B7, FMT_DP },
-    { 146, "DELVEET3+2=", B7, FMT_DP },
-    { 148, "DELVEET3+4=", B7, FMT_DP },
-    { 150, "ELEV=", 360, FMT_DP },
-    { 152, "CDUS=", 360, FMT_SP },
-    { -1 }, { -1 },
-    { 153, "PIPAX=", B14, FMT_SP },
-    { 154, "PIPAY=", B14, FMT_SP },
-    { 155, "PIPAZ=", B14, FMT_SP },
-    { -1 },
-    { 156, "LASTYCMD=", B0, FMT_OCT },
-    { 157, "LASTXCMD=", B0, FMT_OCT },
-    { 158, "LEMMASS=", B16, FMT_SP },
-    { 159, "CSMMASS=", B16, FMT_SP },
-    { 160, "IMODES30=", B0, FMT_OCT },
-    { 161, "IMODES33=", B0, FMT_OCT },
-    { -1 }, { -1 },
-    { 162, "TIG=", B28, FMT_DP },    
-    { 164, "OMEGAP=", 45, FMT_SP },
-    { 165, "OMEGAQ=", 45, FMT_SP },
-    { 166, "OMEGAR=", 45, FMT_SP },
-    { 176, "ALPHAQ=", 90, FMT_SP },
-    { 177, "ALPHAR=", 90, FMT_SP },
-    { 178, "POSTORKP=", 32, FMT_DEC },
-    { 179, "NEGTORKP=", 32, FMT_DEC },
-    { 180, "CHN11,12=", B0, FMT_2OCT },
-    { 182, "CHN13,14=", B0, FMT_2OCT },
-    { 184, "CHN30,31=", B0, FMT_2OCT },
-    { 186, "CHN32,33=", B0, FMT_2OCT },
-    { 190, "CENTANG=", 360, FMT_DP },
-    { 192, "NN=", B0, FMT_DEC },
-    { 194, "DIFFALT=", B29, FMT_DP },
-    { 196, "DELVTPF=", B7, FMT_DP }
-  }
-};
+  i = strcmp(s1->name, s2->name);
+  if (i != 0)
+    return i;
+  return s1->index - s2->index;
+}
 
-static DownlinkListSpec_t CmProgram22Spec = {
-  "CM Program 22 downlink list",
-  {
-    { 0, "ID=", B0, FMT_OCT },
-    { 1, "SYNC=", B0, FMT_OCT },
-    { 100, "TIME=", B28, FMT_DP },
-    { -1 },
-    { 2, "RN=", B29, FMT_DP },
-    { 4, "RN+2=", B29, FMT_DP },
-    { 6, "RN+4=", B29, FMT_DP },
-    { -1 },
-    { 8, "VN=", B7, FMT_DP },
-    { 10, "VN+2=", B7, FMT_DP },
-    { 12, "VN+4=", B7, FMT_DP },
-    { 14, "PIPTIME=", B28, FMT_DP },
-    { 16, "CDUX=", 360, FMT_SP },
-    { 17, "CDUY=", 360, FMT_SP },
-    { 18, "CDUZ=", 360, FMT_SP },
-    { 19, "CDUT=", B0, FMT_2OCT },	// Confused about this one.
-    { 20, "ADOT=", 450, FMT_DP, &FormatAdotsOrOga },
-    { 22, "ADOT+2=", 450, FMT_DP, &FormatAdotsOrOga },
-    { 24, "ADOT+4=", 450, FMT_DP, &FormatAdotsOrOga },
-    { -1 },
-    { 26, "AK=", 180, FMT_SP },
-    { 27, "AK1=", 180, FMT_SP },
-    { 28, "AK2=", 180, FMT_SP }, 
-    { 29, "RCSFLAGS=", B0, FMT_OCT },
-    { 30, "THETADX=", 360, FMT_USP },
-    { 31, "THETADY=", 360, FMT_USP },
-    { 32, "THETADZ=", 360, FMT_USP },
-    { -1 },
-    { 34, "SVMRKDAT=", B28, FMT_DP },	// 1st mark
-    { 36, "SVMRKDAT+2=", 360, FMT_USP },
-    { 37, "SVMRKDAT+3=", 360, FMT_USP },
-    { 38, "SVMRKDAT+4=", 360, FMT_USP },
-    { 39, "SVMRKDAT+5=", 45, FMT_SP, &FormatOTRUNNION },
-    { 40, "SVMRKDAT+6=", 360, FMT_USP },
-    { 41, "SVMRKDAT+7=", B28, FMT_DP },	// 2nd mark
-    { 43, "SVMRKDAT+9=", 360, FMT_USP },
-    { 44, "SVMRKDAT+10=", 360, FMT_USP },
-    { 45, "SVMRKDAT+11=", 360, FMT_USP },
-    { 46, "SVMRKDAT+12=", 45, FMT_SP, &FormatOTRUNNION },
-    { 47, "SVMRKDAT+13=", 360, FMT_USP },
-    { 48, "SVMRKDAT+14=", B28, FMT_DP },// 3rd mark
-    { 50, "SVMRKDAT+16=", 360, FMT_USP },
-    { 51, "SVMRKDAT+17=", 360, FMT_USP },
-    { 52, "SVMRKDAT+18=", 360, FMT_USP },
-    { 53, "SVMRKDAT+19=", 45, FMT_SP, &FormatOTRUNNION },
-    { 54, "SVMRKDAT+20=", 360, FMT_USP },
-    { 55, "SVMRKDAT+21=", B28, FMT_DP },// 4th mark
-    { 57, "SVMRKDAT+23=", 360, FMT_USP },
-    { 58, "SVMRKDAT+24=", 360, FMT_USP },
-    { 59, "SVMRKDAT+25=", 360, FMT_USP },
-    { 60, "SVMRKDAT+26=", 45, FMT_SP, &FormatOTRUNNION },
-    { 61, "SVMRKDAT+27=", 360, FMT_USP },
-    { 62, "SVMRKDAT+28=", B28, FMT_DP },// 5th mark
-    { 64, "SVMRKDAT+30=", 360, FMT_USP },
-    { 65, "SVMRKDAT+31=", 360, FMT_USP },
-    { 66, "SVMRKDAT+32=", 360, FMT_USP },
-    { 67, "SVMRKDAT+33=", 45, FMT_SP, &FormatOTRUNNION },
-    { 68, "SVMRKDAT+34=", 360, FMT_USP },
-    { 70, "LANDMARK=", B0, FMT_OCT },
-    { 78, "STATE=", B0, FMT_2OCT },
-    { 80, "STATE+2=", B0, FMT_2OCT },
-    { 82, "STATE+4=", B0, FMT_2OCT },
-    { 84, "STATE+6=", B0, FMT_2OCT },
-    { 86, "STATE+8=", B0, FMT_2OCT },
-    { 88, "DSPTB=", B0, FMT_OCT },
-    { 90, "DSPTB+2=", B0, FMT_2OCT },
-    { 92, "DSPTB+4=", B0, FMT_2OCT },
-    { 94, "DSPTB+6=", B0, FMT_2OCT },
-    { 96, "DSPTB+8=", B0, FMT_2OCT },
-    { 98, "DSPTB+10=", B0, FMT_2OCT },
-    { 102, "LAT=", 360, FMT_DP },
-    { 104, "LONG=", 360, FMT_DP },
-    { 106, "ALT=", B29, FMT_DP },
-    { 126, "OPTION1=", B0, FMT_OCT },	// Don't know what this is.
-    { 127, "OPTION2=", B0, FMT_OCT },	// .. or this
-    { 128, "TET=", B28, FMT_DP },	// ... or this
-    { 134, "RSBBQ=", B0, FMT_2OCT },
-    { 137, "CHAN77=", B0, FMT_OCT },
-    { 138, "C31FLWRD=", B0, FMT_OCT },
-    { -1 },
-    { 139, "FAILREG=", B0, FMT_OCT },
-    { 140, "FAILREG+1=", B0, FMT_OCT },
-    { 141, "FAILREG+2=", B0, FMT_OCT },
-    { 142, "CDUS=", 360, FMT_SP },
-    { 143, "PIPAX=", B14, FMT_SP },
-    { 144, "PIPAY=", B14, FMT_SP },
-    { 145, "PIPAZ=", B14, FMT_SP },
-    { 146, "8NN=", B0, FMT_DEC },
-    { 152, "STATE+10=", B0, FMT_2OCT },
-    { 154, "RLS=", B27, FMT_DP },
-    { 156, "RLS+2=", B27, FMT_DP },
-    { 158, "RLS+4=", B27, FMT_DP },
-    { 158, "OPTMODES=", B0, FMT_OCT },
-    { 159, "HOLDFLAG=", B0, FMT_DEC },
-    { 160, "LEMMASS=", B16, FMT_SP },
-    { 161, "CSMMASS=", B16, FMT_SP },
-    { 162, "DAPDATR1=", B0, FMT_OCT },
-    { 163, "DAPDATR2=", B0, FMT_OCT },
-    { -1 }, { -1 },
-    { 164, "ERRORX=", 180, FMT_SP },
-    { 165, "ERRORY=", 180, FMT_SP },
-    { 166, "ERRORZ=", 180, FMT_SP },
-    { -1 },
-    { 168, "WBODY=", 450, FMT_DP, &FormatAdotsOrOga },
-    { 170, "WBODY+2=", 450, FMT_DP, &FormatAdotsOrOga },
-    { 172, "WBODY+4=", 450, FMT_DP, &FormatAdotsOrOga },
-    { 174, "REDOCTR=", B0, FMT_DEC },
-    { 175, "THETAD=", 360, FMT_SP },
-    { 176, "THETAD+1=", 360, FMT_SP },
-    { 177, "THETAD+2=", 360, FMT_SP },
-    { -1 },
-    { 178, "IMODES30=", B0, FMT_OCT },
-    { 179, "IMODES33=", B0, FMT_OCT },
-    { -1 },
-    { -1 },
-    { 180, "CHN11,12=", B0, FMT_2OCT },
-    { 182, "CHN13,14=", B0, FMT_2OCT },
-    { 184, "CHN30,31=", B0, FMT_2OCT },
-    { 186, "CHN32,33=", B0, FMT_2OCT },
-  }
-};
+void
+dddNormalize(DownlinkListSpec_t *dls)
+{
+#ifdef SHOW_WORD_NUMBERS
+  int skip = 1;
+#else
+  int skip = 0;
+#endif
+  int i, j;
+  FieldSpec_t *FieldSpecs, fs;
+#ifdef DO_DDD_NORMALIZATION
+  int numNames;
+  FieldSpec_t *Fifs;
+  dddName_t names[MAX_DOWNLINK_LIST];
+#endif
 
-static DownlinkListSpec_t LmDescentAscentSpec = {
-  "LM Descent/Ascent downlink list",
-  {
-    { 0, "ID=", B0, FMT_OCT },
-    { 1, "SYNC=", B0, FMT_OCT },
-    { 100, "TIME=", B28, FMT_DP },
-    { -1 },
-    { 2, "LRXCDUDL=", 360, FMT_SP },
-    { 3, "LRYCDUDL=", 360, FMT_SP },
-    { 4, "LRZCDUDL=", 360, FMT_SP },
-    { -1 },
-    { 6, "VSELECT=", B0, FMT_DEC },
-    { 8, "LRVTIMDL=", B28, FMT_DP },
-    { 10, "VMEAS=", B28, FMT_DP },
-    { 12, "MKTIME=", B28, FMT_DP }, 
-    { 14, "HMEAS=", B28, FMT_DP, &FormatHMEAS },
-    { 16, "RANGRDOT=", B0, FMT_2OCT },	// Look at this later.
-    { -1 }, { -1 },
-    { 18, "AIG=", 360, FMT_SP },
-    { 19, "AMG=", 360, FMT_SP },
-    { 20, "AOG=", 360, FMT_SP },
-    { 21, "TRKMKCNT=", B0, FMT_DEC },
-    { 22, "TANGNB=", 360, FMT_SP },
-    { 23, "TANGNB+1=", 360, FMT_SP },
-    { 26, "TEVENT=", B28, FMT_DP },
-    { -1 },
-    { 28, "UNFC/2=", B0, FMT_DP },    
-    { 30, "UNFC/2+2=", B0, FMT_DP },    
-    { 32, "UNFC/2+4=", B0, FMT_DP },  
-    { -1 },  
-    { 34, "VGVECT=", B7, FMT_DP },    
-    { 36, "VGVECT+2=", B0, FMT_DP },    
-    { 38, "VGVECT+4=", B0, FMT_DP },  
-    { -1 },  
-    { 40, "TTF/8=", B17, FMT_DP },
-    { 42, "DELTAH=", B24, FMT_DP },
-    { -1 }, { -1 },
-    { 44, "RLS=", B27, FMT_DP },
-    { 46, "RLS+2=", B27, FMT_DP },
-    { 48, "RLS+4=", B27, FMT_DP },
-    { 50, "ZDOTD=", B7, FMT_DP },
-    { 52, "X789=", B5, FMT_SP, FormatEarthOrMoonDP },
-    { 54, "X789+2=", B5, FMT_SP, FormatEarthOrMoonDP },
-    { -1 }, { -1 },
-    { 56, "LASTYCMD=", B0, FMT_DEC },
-    { 57, "LASTXCMD=", B0, FMT_DEC },
-    { 58, "REDOCTR=", B0, FMT_DEC },
-    { -1 },
-    { 59, "THETAD=", 360, FMT_SP },
-    { 60, "THETAD+1=", 360, FMT_SP },
-    { 61, "THETAD+2=", 360, FMT_SP },
-    { -1 },
-    { 62, "RSBBQ=", B0, FMT_OCT },
-    { 63, "RSBBQ+1=", B0, FMT_OCT },
-    { -1 }, { -1 },
-    { 64, "OMEGAP=", 45, FMT_SP },
-    { 65, "OMEGAQ=", 45, FMT_SP },
-    { 66, "OMEGAR=", 45, FMT_SP },
-    { -1 },
-    { 68, "CDUXD=", 360, FMT_SP },
-    { 69, "CDUYD=", 360, FMT_SP },
-    { 70, "CDUZD=", 360, FMT_SP },
-    { -1 },
-    { 72, "CDUX=", 360, FMT_SP },
-    { 73, "CDUY=", 360, FMT_SP },
-    { 74, "CDUZ=", 360, FMT_SP },
-    { 75, "CDUT=", 360, FMT_SP },
-    { 76, "STATE=", B0, FMT_2OCT },
-    { 78, "STATE+2=", B0, FMT_2OCT },
-    { 80, "STATE+4=", B0, FMT_2OCT },
-    { 82, "STATE+6=", B0, FMT_2OCT },
-    { 84, "STATE+8=", B0, FMT_2OCT },
-    { 86, "STATE+10=", B0, FMT_2OCT },
-    { -1 }, { -1 },
-    { 88, "DSPTB=", B0, FMT_OCT },
-    { 90, "DSPTB+2=", B0, FMT_2OCT },
-    { 92, "DSPTB+4=", B0, FMT_2OCT },
-    { 94, "DSPTB+6=", B0, FMT_2OCT },
-    { 96, "DSPTB+8=", B0, FMT_2OCT },
-    { 98, "DSPTB+10=", B0, FMT_2OCT },
-    { -1 }, { -1 },
-    { 102, "RN=", B29, FMT_DP },
-    { 104, "RN+2=", B29, FMT_DP },
-    { 106, "RN+4=", B29, FMT_DP },
-    { -1 },
-    { 108, "VN=", B7, FMT_DP },
-    { 110, "VN+2=", B7, FMT_DP },
-    { 112, "VN+4=", B7, FMT_DP },
-    { 114, "PIPTIME=", B28, FMT_DP },
-    { 116, "OMEGAPD=", 45, FMT_SP },
-    { 117, "OMEGAQD=", 45, FMT_SP },
-    { 118, "OMEGARD=", 45, FMT_SP },
-    { -1 },
-    { 120, "CADRFLSH=", B0, FMT_OCT },
-    { 121, "CADRFLSH+1=", B0, FMT_OCT },
-    { 122, "CADRFLSH+2=", B0, FMT_OCT },
-    { -1 },
-    { 123, "FAILREG=", B0, FMT_OCT },
-    { 124, "FAILREG+1=", B0, FMT_OCT },
-    { 125, "FAILREG+2=", B0, FMT_OCT },
-    { -1 },
-    { 126, "RADMODES=", B0, FMT_OCT },
-    { 127, "DAPBOOLS=", B0, FMT_OCT },
-    { -1 }, { -1 },
-    { 128, "POSTORKU=", 32, FMT_DEC },
-    { 129, "NEGTORKU=", 32, FMT_DEC },
-    { 130, "POSTORKV=", 32, FMT_DEC },
-    { 131, "NEGTORKV=", 32, FMT_DEC },
-    { 132, "RGU=", B24, FMT_DP },
-    { 134, "RGU+2=", B24, FMT_DP },
-    { 136, "RGU+4=", B24, FMT_DP },
-    { -1 },
-    { 138, "VGU=", B10, FMT_DP },
-    { 140, "VGU+2=", B10, FMT_DP },
-    { 142, "VGU+4=", B10, FMT_DP },
-    { -1 },
-    { 144, "LAND=", B24, FMT_DP },
-    { 146, "LAND+2=", B24, FMT_DP },
-    { 148, "LAND+4=", B24, FMT_DP },
-    { -1 },
-    { 150, "AT=", B9, FMT_DP },
-    { 152, "TLAND=", B28, FMT_DP },
-    { 154, "FC=", B14, FMT_SP, &FormatGtc },
-    { -1 },
-    { 156, "LASTYCMD=", B0, FMT_OCT },
-    { 157, "LASTXCMD=", B0, FMT_OCT },
-    { 158, "LEMMASS=", B16, FMT_SP },
-    { 159, "CSMMASS=", B16, FMT_SP },
-    { 160, "IMODES30=", B0, FMT_OCT },
-    { 161, "IMODES33=", B0, FMT_OCT },
-    { -1 }, { -1 },
-    { 162, "TIG=", B28, FMT_DP },    
-    { 164, "OMEGAP=", 45, FMT_SP },
-    { 165, "OMEGAQ=", 45, FMT_SP },
-    { 166, "OMEGAR=", 45, FMT_SP },
-    { 176, "ALPHAQ=", 90, FMT_SP },
-    { 177, "ALPHAR=", 90, FMT_SP },
-    { 178, "POSTORKP=", 32, FMT_DEC },
-    { 179, "NEGTORKP=", 32, FMT_DEC },
-    { 180, "CHN11,12=", B0, FMT_2OCT },
-    { 182, "CHN13,14=", B0, FMT_2OCT },
-    { 184, "CHN30,31=", B0, FMT_2OCT },
-    { 186, "CHN32,33=", B0, FMT_2OCT },
-    { 188, "PIPTIME1=", B28, FMT_DP },
-    { 190, "DELV=", B14, FMT_DP },
-    { 192, "DELV+2=", B14, FMT_DP },
-    { 194, "DELV+4=", B14, FMT_DP },
-    { 196, "PSEUDO55=", B14, FMT_SP, &FormatGtc },
-    { 198, "TTOGO=", B28, FMT_DP }
-  }
-};
+#if defined(DO_DDD_NORMALIZATION) || defined(SHOW_WORD_NUMBERS)
+  // Step 1:  Eliminate all spacers.
+  FieldSpecs = dls->FieldSpecs;
+  for (i = 0; i < MAX_DOWNLINK_LIST; i++)
+    if (FieldSpecs[i].IndexIntoList == -1)
+      {
+	dddPop(dls, i, &fs);
+	i--;
+      }
+#endif
 
-static DownlinkListSpec_t LmLunarSurfaceAlignSpec = {
-  "LM Lunar Surface Align downlink list",
-  {
-    { 0, "ID=", B0, FMT_OCT },
-    { 1, "SYNC=", B0, FMT_OCT },
-    { 100, "TIME=", B28, FMT_DP },
-    { -1 },
-    { 2, "R-OTHER=", B29, FMT_DP },
-    { 4, "R-OTHER+2=", B29, FMT_DP },
-    { 6, "R-OTHER+4=", B29, FMT_DP },
-    { -1 },
-    { 8, "V-OTHER=", B7, FMT_DP },
-    { 10, "V-OTHER+2=", B7, FMT_DP },
-    { 12, "V-OTHER+4=", B7, FMT_DP },
-    { 14, "T-OTHER=", B28, FMT_DP },
-    { 16, "RANGRDOT=", B0, FMT_2OCT },	// Look at this later.
-    { -1 }, { -1 }, { -1 },
-    { 18, "AIG=", 360, FMT_SP },
-    { 19, "AMG=", 360, FMT_SP },
-    { 20, "AOG=", 360, FMT_SP },
-    { 21, "TRKMKCNT=", B0, FMT_DEC },
-    { 22, "TANGNB=", 360, FMT_SP },
-    { 23, "TANGNB+1=", 360, FMT_SP },
-    { 24, "MARKTIME=", B28, FMT_DP },
-    { 26, "TALIGN=", B28, FMT_DP },
-    { 28, "REFSMMAT=", B0, FMT_DP },
-    { 30, "REFSMMAT+2=", B0, FMT_DP },
-    { 32, "REFSMMAT+4=", B0, FMT_DP },
-    { 34, "REFSMMAT+6=", B0, FMT_DP },
-    { 36, "REFSMMAT+8=", B0, FMT_DP },
-    { 38, "REFSMMAT+10=", B0, FMT_DP },
-    { -1 }, { -1 },
-    { 40, "YNBSAV=", B1, FMT_DP },
-    { 42, "YNBSAV+2=", B1, FMT_DP },
-    { 44, "YNBSAV+4=", B1, FMT_DP },
-    { -1 },
-    { 46, "ZNBSAV=", B1, FMT_DP },
-    { 48, "ZNBSAV+2=", B1, FMT_DP },
-    { 50, "ZNBSAV+4=", B1, FMT_DP },
-    { -1 },
-    { 52, "X789=", B5, FMT_SP, FormatEarthOrMoonDP },
-    { 54, "X789+2=", B5, FMT_SP, FormatEarthOrMoonDP },
-    { 56, "LASTYCMD=", B0, FMT_DEC },
-    { 57, "LASTXCMD=", B0, FMT_DEC },
-    { 58, "REDOCTR=", B0, FMT_DEC },
-    { 59, "THETAD=", 360, FMT_SP },
-    { 60, "THETAD+1=", 360, FMT_SP },
-    { 61, "THETAD+2=", 360, FMT_SP },
-    { 62, "RSBBQ=", B0, FMT_OCT },
-    { 63, "RSBBQ+1=", B0, FMT_OCT },
-    { -1 }, { -1 },
-    { 64, "OMEGAP=", 45, FMT_SP },
-    { 65, "OMEGAQ=", 45, FMT_SP },
-    { 66, "OMEGAR=", 45, FMT_SP },
-    { -1 },
-    { 68, "CDUXD=", 360, FMT_SP },
-    { 69, "CDUYD=", 360, FMT_SP },
-    { 70, "CDUZD=", 360, FMT_SP },
-    { -1 },
-    { 72, "CDUX=", 360, FMT_SP },
-    { 73, "CDUY=", 360, FMT_SP },
-    { 74, "CDUZ=", 360, FMT_SP },
-    { 75, "CDUT=", 360, FMT_SP },
-    { 76, "STATE=", B0, FMT_2OCT },
-    { 78, "STATE+2=", B0, FMT_2OCT },
-    { 80, "STATE+4=", B0, FMT_2OCT },
-    { 82, "STATE+6=", B0, FMT_2OCT },
-    { 84, "STATE+8=", B0, FMT_2OCT },
-    { 86, "STATE+10=", B0, FMT_2OCT },
-    { -1 }, { -1 },
-    { 88, "DSPTB=", B0, FMT_OCT },
-    { 90, "DSPTB+2=", B0, FMT_2OCT },
-    { 92, "DSPTB+4=", B0, FMT_2OCT },
-    { 94, "DSPTB+6=", B0, FMT_2OCT },
-    { 96, "DSPTB+8=", B0, FMT_2OCT },
-    { 98, "DSPTB+10=", B0, FMT_2OCT },
-    { -1 }, { -1 },
-    { 102, "RN=", B29, FMT_DP },
-    { 104, "RN+2=", B29, FMT_DP },
-    { 106, "RN+4=", B29, FMT_DP },
-    { -1 },
-    { 108, "VN=", B7, FMT_DP },
-    { 110, "VN+2=", B7, FMT_DP },
-    { 112, "VN+4=", B7, FMT_DP },
-    { 114, "PIPTIME=", B28, FMT_DP },
-    { 116, "OMEGAPD=", 45, FMT_SP },
-    { 117, "OMEGAQD=", 45, FMT_SP },
-    { 118, "OMEGARD=", 45, FMT_SP },
-    { -1 },
-    { 120, "CADRFLSH=", B0, FMT_OCT },
-    { 121, "CADRFLSH+1=", B0, FMT_OCT },
-    { 122, "CADRFLSH+2=", B0, FMT_OCT },
-    { -1 },
-    { 123, "FAILREG=", B0, FMT_OCT },
-    { 124, "FAILREG+1=", B0, FMT_OCT },
-    { 125, "FAILREG+2=", B0, FMT_OCT },
-    { -1 },
-    { 126, "RADMODES=", B0, FMT_OCT },
-    { 127, "DAPBOOLS=", B0, FMT_OCT },
-    { -1 }, { -1 },
-    { 128, "OGC=", 360, FMT_DP },
-    { 130, "IGC=", 360, FMT_DP },
-    { 132, "MGC=", 360, FMT_DP },
-    { -1 },
-    { 134, "BESTI=", 6, FMT_DEC },
-    { 135, "BESTJ=", 6, FMT_DEC },
-    { 136, "STARSAV1=", 2, FMT_DP },	// Fix later.  
-    { 138, "STARSAV1+2=", 2, FMT_DP },	// Fix later.  
-    { 140, "STARSAV1+4=", 2, FMT_DP },	// Fix later.  
-    { 142, "STARSAV2=", 2, FMT_DP },	// Fix later.  
-    { 144, "STARSAV2+2=", 2, FMT_DP },	// Fix later.  
-    { 146, "STARSAV2+4=", 2, FMT_DP },	// Fix later.  
-    { 148, "GSAV=", 2, FMT_DP },
-    { 150, "GSAV+2=", 2, FMT_DP },
-    { 152, "GSAV+4=", 2, FMT_DP },
-    { 154, "AGSK=", B28, FMT_DP },
-    { 158, "LEMMASS=", B16, FMT_SP },
-    { 159, "CSMMASS=", B16, FMT_SP },
-    { 160, "IMODES30=", B0, FMT_OCT },
-    { 161, "IMODES33=", B0, FMT_OCT },
-    { 162, "TIG=", B28, FMT_DP },    
-    { 164, "OMEGAP=", 45, FMT_SP },
-    { 165, "OMEGAQ=", 45, FMT_SP },
-    { 166, "OMEGAR=", 45, FMT_SP },
-    { 176, "ALPHAQ=", 90, FMT_SP },
-    { 177, "ALPHAR=", 90, FMT_SP },
-    { 178, "POSTORKP=", 32, FMT_DEC },
-    { 179, "NEGTORKP=", 32, FMT_DEC },
-    { 180, "CHN11,12=", B0, FMT_2OCT },
-    { 182, "CHN13,14=", B0, FMT_2OCT },
-    { 184, "CHN30,31=", B0, FMT_2OCT },
-    { 186, "CHN32,33=", B0, FMT_2OCT },
-    { 188, "PIPTIME1=", B28, FMT_DP },
-    { 190, "DELV=", B14, FMT_DP },
-    { 192, "DELV+2=", B14, FMT_DP },
-    { 194, "DELV+4=", B14, FMT_DP }
-  }
-};
+#ifdef DO_DDD_NORMALIZATION
+  // Step 2:  Group stuff like VARIABLE, VARIABLE+n together.  A preliminary
+  // step is to sort the variable names, so that we can even find out if there
+  // are any sets of names like this.  This is done into the `names` array.
+  for (i = 0; i < MAX_DOWNLINK_LIST; i++)
+    {
+      int n, length;
+      char *plus, *Name;
+      FieldSpecName_t name;
 
-static DownlinkListSpec_t CmEntryUpdateSpec = {
-  "CM Entry/Update downlink list",
-  {
-    { 0, "ID=", B0, FMT_OCT },
-    { 1, "SYNC=", B0, FMT_OCT },
-    { 100, "TIME=", B28, FMT_DP },
-    { -1 },
-    { 2, "RN=", B29, FMT_DP },
-    { 4, "RN+2=", B29, FMT_DP },
-    { 6, "RN+4=", B29, FMT_DP },
-    { -1 },
-    { 8, "VN=", B7, FMT_DP },
-    { 10, "VN+2=", B7, FMT_DP },
-    { 12, "VN+4=", B7, FMT_DP },
-    { 14, "PIPTIME=", B28, FMT_DP },
-    { 16, "CDUX=", 360, FMT_SP },
-    { 17, "CDUY=", 360, FMT_SP },
-    { 18, "CDUZ=", 360, FMT_SP },
-    { 19, "CDUT=", B0, FMT_2OCT },	// Confused about this one.
-    { 20, "ADOT=", 450, FMT_DP, &FormatAdotsOrOga },
-    { 22, "ADOT+2=", 450, FMT_DP, &FormatAdotsOrOga },
-    { 24, "ADOT+4=", 450, FMT_DP, &FormatAdotsOrOga },
-    { -1 },
-    { 26, "AK=", 180, FMT_SP },
-    { 27, "AK1=", 180, FMT_SP },
-    { 28, "AK2=", 180, FMT_SP }, 
-    { 29, "RCSFLAGS=", B0, FMT_OCT },
-    { 30, "THETADX=", 360, FMT_USP },
-    { 31, "THETADY=", 360, FMT_USP },
-    { 32, "THETADZ=", 360, FMT_USP },
-    { 34, "CMDAPMOD=", B0, FMT_OCT },
-    { 35, "PREL=", 1800, FMT_SP },
-    { 36, "QREL=", 1800, FMT_SP },
-    { 37, "RREL=", 1800, FMT_SP },
-    { 38, "L/D1=", B0, FMT_DP, &FormatHalfDP },
-    { 40, "UPBUFF=", B0, FMT_2OCT },
-    { 42, "UPBUFF+2=", B0, FMT_2OCT },
-    { 44, "UPBUFF+4=", B0, FMT_2OCT },
-    { 46, "UPBUFF+6=", B0, FMT_2OCT },
-    { 48, "UPBUFF+8=", B0, FMT_2OCT },
-    { 50, "UPBUFF+10=", B0, FMT_2OCT },
-    { 52, "UPBUFF+12=", B0, FMT_2OCT },
-    { 54, "UPBUFF+14=", B0, FMT_2OCT },
-    { 56, "UPBUFF+16=", B0, FMT_2OCT },
-    { 58, "UPBUFF+18=", B0, FMT_2OCT },
-    { 60, "COMPNUMB=", B0, FMT_OCT },
-    { 61, "UPOLDMOD=", B0, FMT_DEC },
-    { 62, "UPVERB=", B0, FMT_DEC },
-    { 63, "UPCOUNT=", B0, FMT_OCT },
-    { 64, "PAXERR1=", 360, FMT_SP },
-    { 65, "ROLLTM=", 180, FMT_SP },
-    { 66, "LATANG=", 4, FMT_DP },
-    { 68, "RDOT=", B0, FMT_DP, &FormatRDOT },
-    { 70, "THETAH=", 360, FMT_DP },
-    { 72, "LAT(SPL)=", 360, FMT_DP },
-    { 74, "LNG(SPL)=", 360, FMT_DP },
-    { 76, "ALFA/180=", 180, FMT_SP },
-    { 77, "BETA/180=", 180, FMT_SP },
-    { 78, "STATE=", B0, FMT_2OCT },
-    { 80, "STATE+2=", B0, FMT_2OCT },
-    { 82, "STATE+4=", B0, FMT_2OCT },
-    { 84, "STATE+6=", B0, FMT_2OCT },
-    { 86, "STATE+8=", B0, FMT_2OCT },
-    { 88, "DSPTB=", B0, FMT_OCT },
-    { 90, "DSPTB+2=", B0, FMT_2OCT },
-    { 92, "DSPTB+4=", B0, FMT_2OCT },
-    { 94, "DSPTB+6=", B0, FMT_2OCT },
-    { 96, "DSPTB+8=", B0, FMT_2OCT },
-    { 98, "DSPTB+10=", B0, FMT_2OCT },
-    { 102, "PIPTIME1=", B28, FMT_DP },
-    { -1 },
-    { 104, "DELV=", B14, FMT_DP, &FormatDELV },
-    { 106, "DELV+2=", B14, FMT_DP, &FormatDELV },
-    { 108, "DELV+4=", B14, FMT_DP, &FormatDELV },
-    { -1 },
-    { 110, "TTE=", B28, FMT_DP },
-    { 112, "VIO=", B7, FMT_DP },
-    { 114, "VPRED=", B7, FMT_DP },
-    { -1 },
-    { 126, "OPTION1=", B0, FMT_OCT },	// Don't know what this is.
-    { 127, "OPTION2=", B0, FMT_OCT },	// .. or this
-    { 128, "TET=", B28, FMT_DP },	// ... or this
-    { -1 },
-    { 130, "ERRORX=", 180, FMT_SP },
-    { 131, "ERRORY=", 180, FMT_SP },
-    { 132, "ERRORZ=", 180, FMT_SP },
-    { -1 },
-    { 160, "LEMMASS=", B16, FMT_SP },
-    { 161, "CSMMASS=", B16, FMT_SP },
-    { 162, "DAPDATR1=", B0, FMT_OCT },
-    { 163, "DAPDATR2=", B0, FMT_OCT },
-    { 165, "ROLLC=", 360, FMT_SP },
-    { 166, "OPTMODES=", B0, FMT_OCT },
-    { 167, "HOLDFLAG=", B0, FMT_DEC },
-    { -1 },
-    { 168, "WBODY=", 450, FMT_DP, &FormatAdotsOrOga },
-    { 170, "WBODY+2=", 450, FMT_DP, &FormatAdotsOrOga },
-    { 172, "WBODY+4=", 450, FMT_DP, &FormatAdotsOrOga },
-    { 174, "REDOCTR=", B0, FMT_DEC },
-    { 175, "THETAD=", 360, FMT_SP },
-    { 176, "THETAD+1=", 360, FMT_SP },
-    { 177, "THETAD+2=", 360, FMT_SP },
-    { -1 },
-    { 178, "IMODES30=", B0, FMT_OCT },
-    { 179, "IMODES33=", B0, FMT_OCT },
-    { -1 },
-    { -1 },
-    { 180, "CHN11,12=", B0, FMT_2OCT },
-    { 182, "CHN13,14=", B0, FMT_2OCT },
-    { 184, "CHN30,31=", B0, FMT_2OCT },
-    { 186, "CHN32,33=", B0, FMT_2OCT },
-    { 188, "RSBBQ=", B0, FMT_2OCT },
-    { 191, "CHAN77=", B0, FMT_OCT },
-    { 192, "C31FLWRD=", B0, FMT_OCT },
-    { -1 },
-    { 193, "FAILREG=", B0, FMT_OCT },
-    { 194, "FAILREG+1=", B0, FMT_OCT },
-    { 195, "FAILREG+2=", B0, FMT_OCT },
-    { -1 },
-    { 196, "STATE+10=", B0, FMT_2OCT },
-    { 196, "GAMMAEI=", 360, FMT_DP }
-  }
-};
+      Name = FieldSpecs[i].Name;
+      plus = strstr(Name, "+");
+      if (plus == NULL)
+	{
+	  n = 0;
+	  length = strlen(Name) - 1;
+	}
+      else
+	{
+	  n = atoi(plus + 1);
+	  length = plus - Name;
+	}
+      if (length < 0)
+	break;
+      strncpy(name, Name, length);
+      name[length] = 0;
+      strcpy(names[i].name, name);
+      names[i].index = n;
+    }
+  numNames = i;
+  qsort(names, numNames, sizeof(dddName_t), dddCmp);
+  /*
+  for (i = 0; i < numNames; i++)
+    if (names[i].index)
+      fprintf(stderr, "%3d: %s+%d\n", i, names[i].name, names[i].index);
+    else
+      fprintf(stderr, "%3d: %s\n", i, names[i].name);
+  exit(1);
+  */
+  // TBD ... do the actual rearrangements.
 
-static DownlinkListSpec_t LmAgsInitializationUpdateSpec = {
-  "LM AGS initialization/update downlink list",
-  {
-    { 0, "ID=", B0, FMT_OCT },
-    { 1, "SYNC=", B0, FMT_OCT },
-    { 100, "TIME=", B28, FMT_DP },
-    { -1 },
-    { 2,  "AGSBUFF=", B25, FMT_SP, &FormatEarthOrMoonSP },
-    { 4,  "AGSBUF+2=", B25, FMT_SP, &FormatEarthOrMoonSP },
-    { 6,  "AGSBUF+4=", B25, FMT_SP, &FormatEarthOrMoonSP },
-    { 8,  "LM EPOCH=", B18, FMT_DP, &FormatEpoch },
-    { 10, "AGSBUF+1=", B15, FMT_SP, &FormatEarthOrMoonSP },
-    { 12, "AGSBUF+3=", B15, FMT_SP, &FormatEarthOrMoonSP },
-    { 14, "AGSBUF+5=", B15, FMT_SP, &FormatEarthOrMoonSP },
-    { 18, "AGSBUF+6=", B25, FMT_SP, &FormatEarthOrMoonSP },
-    { 20, "AGSBUF+8=", B25, FMT_SP, &FormatEarthOrMoonSP },
-    { 22, "AGSBUF+10=", B25, FMT_SP, &FormatEarthOrMoonSP },
-    { 24, "CM EPOCH=", B18, FMT_DP, &FormatEpoch },
-    { -1 },
-    { 26, "AGSBUF+7=", B15, FMT_SP, &FormatEarthOrMoonSP },
-    { 28, "AGSBUF+9=", B15, FMT_SP, &FormatEarthOrMoonSP },
-    { 30, "AGSBUF+11=", B15, FMT_SP, &FormatEarthOrMoonSP },
-    { -1 },
-    { 34, "COMPNUMB=", B0, FMT_OCT },
-    { 35, "UPOLDMOD=", B0, FMT_DEC },
-    { 36, "UPVERB=", B0, FMT_DEC },
-    { 37, "UPCOUNT=", B0, FMT_OCT },
-    { 38, "UPBUF=", B0, FMT_2OCT },
-    { 40, "UPBUF+2=", B0, FMT_2OCT },
-    { 42, "UPBUF+4=", B0, FMT_2OCT },
-    { 44, "UPBUF+6=", B0, FMT_2OCT },
-    { 46, "UPBUF+8=", B0, FMT_2OCT },
-    { 48, "UPBUF+10=", B0, FMT_2OCT },
-    { 50, "UPBUF+12=", B0, FMT_2OCT },
-    { 52, "UPBUF+14=", B0, FMT_2OCT },
-    { 54, "UPBUF+16=", B0, FMT_2OCT },
-    { 56, "UPBUF+18=", B0, FMT_2OCT },
-    { -1 }, 
-    // Same as LM Orbital Maneuvers.
-    { 58, "REDOCTR=", B0, FMT_DEC },
-    { 59, "THETAD=", 360, FMT_SP },
-    { 60, "THETAD+1=", 360, FMT_SP },
-    { 61, "THETAD+2=", 360, FMT_SP },
-    { -1 },
-    { 62, "RSBBQ=", B0, FMT_OCT },
-    { 63, "RSBBQ+1=", B0, FMT_OCT },
-    { -1 }, { -1 },
-    { 64, "OMEGAP=", 45, FMT_SP },
-    { 65, "OMEGAQ=", 45, FMT_SP },
-    { 66, "OMEGAR=", 45, FMT_SP },
-    { -1 },
-    { 68, "CDUXD=", 360, FMT_SP },
-    { 69, "CDUYD=", 360, FMT_SP },
-    { 70, "CDUZD=", 360, FMT_SP },
-    { -1 },
-    { 72, "CDUX=", 360, FMT_SP },
-    { 73, "CDUY=", 360, FMT_SP },
-    { 74, "CDUZ=", 360, FMT_SP },
-    { 75, "CDUT=", 360, FMT_SP },
-    { 76, "STATE=", B0, FMT_2OCT },
-    { 78, "STATE+2=", B0, FMT_2OCT },
-    { 80, "STATE+4=", B0, FMT_2OCT },
-    { 82, "STATE+6=", B0, FMT_2OCT },
-    { 84, "STATE+8=", B0, FMT_2OCT },
-    { 86, "STATE+10=", B0, FMT_2OCT },
-    { -1 }, { -1 },
-    { 88, "DSPTB=", B0, FMT_OCT },
-    { 90, "DSPTB+2=", B0, FMT_2OCT },
-    { 92, "DSPTB+4=", B0, FMT_2OCT },
-    { 94, "DSPTB+6=", B0, FMT_2OCT },
-    { 96, "DSPTB+8=", B0, FMT_2OCT },
-    { 98, "DSPTB+10=", B0, FMT_2OCT },
-    { -1 }, { -1 },
-    { 102, "RN=", B29, FMT_DP },
-    { 104, "RN+2=", B29, FMT_DP },
-    { 106, "RN+4=", B29, FMT_DP },
-    { -1 },
-    { 108, "VN=", B7, FMT_DP },
-    { 110, "VN+2=", B7, FMT_DP },
-    { 112, "VN+4=", B7, FMT_DP },
-    { 114, "PIPTIME=", B28, FMT_DP },
-    { 116, "OMEGAPD=", 45, FMT_SP },
-    { 117, "OMEGAQD=", 45, FMT_SP },
-    { 118, "OMEGARD=", 45, FMT_SP },
-    { -1 },
-    // 
-    { 120, "CADRFLSH=", B0, FMT_OCT },
-    { 121, "CADRFLSH+1=", B0, FMT_OCT },
-    { 122, "CADRFLSH+2=", B0, FMT_OCT },
-    { -1 },
-    { 123, "FAILREG=", B0, FMT_OCT },
-    { 124, "FAILREG+1=", B0, FMT_OCT },
-    { 125, "FAILREG+2=", B0, FMT_OCT },
-    { -1 },
-    { 126, "RADMODES=", B0, FMT_OCT },
-    { 127, "DAPBOOLS=", B0, FMT_OCT },
-    { 128, "POSTORKU=", 32, FMT_DEC },
-    { 129, "NEGTORKU=", 32, FMT_DEC },
-    { 130, "POSTORKV=", 32, FMT_DEC },
-    { 131, "NEGTORKV=", 32, FMT_DEC },
-    { 136, "AGSK=", B28, FMT_DP },
-    { -1 },
-    { 138, "UPBUF=", B0, FMT_2OCT },
-    { 140, "UPBUF+2=", B0, FMT_2OCT },
-    { 142, "UPBUF+4=", B0, FMT_2OCT },
-    { 144, "UPBUF+6=", B0, FMT_2OCT },
-    { 146, "UPBUF+8=", B0, FMT_2OCT },
-    { 148, "UPBUF+10=", B0, FMT_2OCT },
-    { 150, "UPBUF+12=", B0, FMT_2OCT },
-    { 152, "UPBUF+14=", B0, FMT_2OCT },
-    { 154, "UPBUF+16=", B0, FMT_2OCT },
-    { 156, "UPBUF+18=", B0, FMT_2OCT },
-    { -1 }, { -1 },
-    { 158, "LEMMASS=", B16, FMT_SP },
-    { 159, "CSMMASS=", B16, FMT_SP },
-    { 160, "IMODES30=", B0, FMT_OCT },
-    { 161, "IMODES33=", B0, FMT_OCT },
-    { 176, "ALPHAQ=", 90, FMT_SP },
-    { 177, "ALPHAR=", 90, FMT_SP },
-    { 178, "POSTORKP=", 32, FMT_DEC },
-    { 179, "NEGTORKP=", 32, FMT_DEC },
-    { 180, "CHN11,12=", B0, FMT_2OCT },
-    { 182, "CHN13,14=", B0, FMT_2OCT },
-    { 184, "CHN30,31=", B0, FMT_2OCT },
-    { 186, "CHN32,33=", B0, FMT_2OCT }
-  }
-};
+  // Step 3:  Insert spacers as necessary.
+  for (i = 0; i < MAX_DOWNLINK_LIST - 1; i++)
+    {
+      FieldSpec_t *fs, *fs1, fsSpacer = { -1 };
+      int length;
+      fs = &FieldSpecs[i];
+      length = strlen(fs->Name);
+      if (length == 0)
+	break;
+      fs1 = &FieldSpecs[i + 1];
+      if (NULL == strstr(fs->Name, "+") &&
+	  !strncmp(fs->Name, fs1->Name, length - 1) &&
+	  fs1->Name[length - 1] == '+')
+	{
+	  dddPush(dls, i, &fsSpacer);
+	  i++;
+	}
+    }
+#endif // DO_DDD_NORMALIZATION
 
-// The ACTUAL downlink lists used.  The following array can be modified
-// at runtime to get different lists.  Or, the array can be used to get
-// pointers to the default lists, which could be modified in-place
-// (for example, to have different row,col coordinates).
+  // Step 4:  Convert spaces to underscores.
+  for (i = 0; i < MAX_DOWNLINK_LIST; i++)
+    {
+      char *s;
+      FieldSpecs = dls->FieldSpecs;
+      if (FieldSpecs[i].IndexIntoList < 0)
+	continue;
+      for (s = FieldSpecs[i].Name, j = skip; *s; s++)
+	if (*s == ' ')
+	  {
+	    j--;
+	    if (j >= 0)
+	      continue;
+	    *s = '_';
+	  }
+    }
+}
 
-// The following array entries must correspond to the numerical order
-// of the DL_xxx constants.
-DownlinkListSpec_t *DownlinkListSpecs[11] = {
-  &CmPoweredListSpec, &LmOrbitalManeuversSpec,
-  &CmCoastAlignSpec, &LmCoastAlignSpec,
-  &CmRendezvousPrethrustSpec, &LmRendezvousPrethrustSpec,
-  &CmProgram22Spec, &LmDescentAscentSpec,
-  &LmLunarSurfaceAlignSpec, &CmEntryUpdateSpec,
-  &LmAgsInitializationUpdateSpec
-};
+//---------------------------------------------------------------------------
+
+// Print the table of downlist specifications to a file.
+static void
+printSpecs(const char *filename)
+{
+#ifdef DEBUG_DOWNLIST_SPEC_FILES
+  FILE *f;
+  int i, j;
+  FieldSpec_t *fieldSpec;
+  f = fopen(filename, "wt");
+  if (f == NULL)
+    {
+      fprintf(stderr, "Could not open %s\n", filename);
+      exit(1);
+    }
+  for (i = 0; i < numDownlists; i++)
+    {
+      DownlinkListSpec_t *specs = &DownlistSpecifications[i];
+      if (specs == NULL)
+	{
+	  fprintf(f, "\tNULL\n");
+	  continue;
+	}
+      fprintf(f, "%05o:\n", specs->id);
+      fprintf(f, "\t%s\n", specs->Title);
+      fieldSpec = specs->FieldSpecs;
+      for (j = 0; j < MAX_DOWNLINK_LIST; j++, fieldSpec++)
+	{
+	  fprintf(f, "\t%d: %d, %s, %08X, %d, %p, %s\n", j,
+		  fieldSpec->IndexIntoList,
+		  fieldSpec->Name,
+		  fieldSpec->Scale,
+		  fieldSpec->Format,
+		  fieldSpec->Formatter,
+		  fieldSpec->Unit
+		  );
+	}
+
+    }
+  fclose(f);
+#endif
+}
+
+static int
+isUnsigned (char *s)
+{
+  if (*s == 0)
+    return 0;
+  for (; *s != 0; s++)
+    if (*s < '0' || *s > '9')
+      return 0;
+  return 1;
+}
+
+int early1 = 0, late1 = 0, early2 = 0, mid2 = 0, late2 = 0;
+int
+dddConfigure (char *agcSoftware, const char *docPrefix)
+{
+  int i, useFallbackDocumentation = 1;
+  FILE *aliases = NULL;
+  char aliasDoc[32] = { 0 }, aliasTsv[32] = { 0 };
+
+  /*
+   * The downlists vary by AGC software version.  There are three aspects of
+   * this that concern us here.  First, a "tsv" file (ddd-ID-version.tsv) must
+   * be chosen that's appropriate to the AGC software version.  These files
+   * give the symbolic names, scaling, format, and so forth for the downlinked
+   * items in the downlist.  There are only a few of these tsv files, because
+   * any given one of them is suitable for multiple AGC software versions.
+   * Similarly, there are the documentation (ddd-ID-tsvVersion.html) files that
+   * describe the downlink items.  Again, there are only a limited number of
+   * them, but they do not partition in the same way as the tsv files, because
+   * any given downlink item, though have the same name, scale, format, etc. as
+   * in other AGC software versions, could nevertheless be described differently.
+   * Finally, the downlink protocol evolved over time, so different AGC software
+   * versions employed differing versions of the protocol.  These various
+   * differences are handled by reading a file called ddd-version-aliases.tsv, which
+   * is a tab-delimited file, with one line for each AGC software version; each
+   * line has four fields, namely:
+   * 	AGC software version (such as "Luminary099")
+   * 	TSV version (such as "Luminary099" also, but could be "Luminary098", etc.)
+   * 	HTML version (such as "Luminary1A")
+   * 	The protocol version ("early1", "late1", "early2", "mid2", "late2")
+   */
+  aliases = fopen("ddd-version-aliases.tsv", "r");
+  if (aliases != NULL)
+    {
+      char line[256], *ss, *sss, *at, *ad;
+      int lenAgcSoftware;
+      lenAgcSoftware = strlen(agcSoftware);
+      while (NULL != fgets(line, sizeof(line), aliases))
+	if (!strncmp(line, agcSoftware, lenAgcSoftware) && line[lenAgcSoftware] == '\t')
+	  {
+	    line[strcspn(line, "\r\n")] = 0; // remove trailing CR or LF.
+	    ss = &line[lenAgcSoftware + 1];
+
+	    sss = strstr(ss, "\t"); // Find 2nd tab.
+	    if (sss == NULL)
+	      continue;
+	    *sss = 0;
+	    at = ss;
+	    ss = sss + 1;
+
+	    sss = strstr(ss, "\t"); // Find 3rd tab.
+	    if (sss == NULL)
+	      continue;
+	    *sss = 0;
+	    ad = ss;
+	    ss = sss + 1;
+
+	    // Now on the final field of the line.
+	    if (!strcmp(ss, "early1"))
+	      early1 = 1;
+	    else if (!strcmp(ss, "late1"))
+	      late1 = 1;
+	    else if (!strcmp(ss, "early2"))
+	      early2 = 1;
+	    else if (!strcmp(ss, "mid2"))
+	      mid2 = 1;
+	    else if (!strcmp(ss, "late2"))
+	      late2 = 1;
+	    else
+	      continue;
+	    strcpy(aliasTsv, at);
+	    strcpy(aliasDoc, ad);
+	    break;
+	  }
+      fclose(aliases);
+    }
+  //fprintf(stderr, "***DEBUG*** aliasDoc = %s\n", aliasDoc);
+  // Software is assumed to be for the LM unless its name begins with one of the
+  // known CM programs.
+  if (!strncmp(agcSoftware, "Sundance", 8))
+    Sundance = 1;
+  CmOrLm = 0;
+  if (!strncmp(agcSoftware, "Artemis", 7) ||
+      !strncmp(agcSoftware, "Colossus", 8) ||
+      !strncmp(agcSoftware, "Comanche", 8) ||
+      !strncmp(agcSoftware, "Manche", 6) ||
+      !strncmp(agcSoftware, "Skylark", 7) ||
+      !strncmp(agcSoftware, "Sunrise", 7) ||
+      !strncmp(agcSoftware, "Corona", 6) ||
+      !strncmp(agcSoftware, "Sunspot", 7) ||
+      !strncmp(agcSoftware, "Solarium", 8) ||
+      !strncmp(agcSoftware, "Sundial", 7) ||
+      !strncmp(agcSoftware, "CM", 2))
+    CmOrLm = 1;
+  if (!strncmp(agcSoftware, "Sunrise", 7) ||
+      !strncmp(agcSoftware, "Corona", 6) ||
+      !strncmp(agcSoftware, "Sunspot", 7) ||
+      !strncmp(agcSoftware, "Solarium", 8) ||
+      !strncmp(agcSoftware, "Sundial", 7) ||
+      !strncmp(agcSoftware, "Aurora", 6) ||
+      !strncmp(agcSoftware, "Borealis", 8) ||
+      !strncmp(agcSoftware, "Sunburst", 7))
+    useFallbackDocumentation = 0;
+  findTsvFiles(aliasTsv);
+  if (numTsvFiles == 0)
+    {
+      fprintf(stderr, "No TSV files found for %s\n", agcSoftware);
+      exit(1);
+    }
+  for (int j = 0; j < numTsvFiles && j < MAX_DOWNLISTS; j++)
+    {
+      int id;
+      char filename[64];
+      DownlinkListSpec_t *dls;
+      FieldSpec_t *fieldSpec;
+      FILE *fp;
+      int i;
+      // At this point, tsvFiles[j] should be a filename of the form
+      // ddd-%05o-softwarename.tsv.  We need to pick off the middle field and
+      // turn it into an integer ID.
+      if (1 != sscanf(tsvFiles[j], "ddd-%05o", &id))
+	continue;
+      dls = &DownlistSpecifications[numDownlists++];
+      if (dls == NULL)
+	continue;
+      dls->id = id;
+      if (aliasDoc[0] != 0)
+	{
+	  sprintf(dls->URL, "%s%s/ddd-%05o-%s.html", docPrefix, aliasDoc, id, aliasDoc);
+	  //fprintf(stderr, "***DEBUG*** trying %s\n", dls->URL);
+	  // Test if the chosen file exists.
+	  aliases = fopen(&(dls->URL[7]), "r");
+	  if (aliases == NULL)
+	    {
+	      //fprintf(stderr, "***DEBUG*** Nope!\n");
+	      dls->URL[0] = 0;
+	    }
+	  else
+	    {
+	      //fprintf(stderr, "***DEBUG*** Yup!\n");
+	      fclose(aliases);
+	    }
+	}
+      else
+	dls->URL[0] = 0;
+      if (dls->URL[0] == 0)
+	{
+	  if (!useFallbackDocumentation)
+	    sprintf(dls->URL, "%sddd-no-documentation.html", docPrefix);
+	  else if (CmOrLm)
+	    {
+	      sprintf(filename, "%sddd-%05o-unavailable-CM.html", docPrefix, id);
+	      fp = fopen(&filename[7], "r");
+	      if (fp != NULL)
+		{
+		  fclose(fp);
+		  strcpy(dls->URL, filename);
+		}
+	      else
+		sprintf(dls->URL, "%sddd-unavailable-CM.html", docPrefix);
+	    }
+	  else if (!Sundance)
+	    {
+	      sprintf(filename, "%sddd-%05o-unavailable-LM.html", docPrefix, id);
+	      //fprintf(stderr, "Checking for %s\n", filename);
+	      fp = fopen(&filename[7], "r");
+	      if (fp != NULL)
+		{
+		  //fprintf(stderr, "Found\n");
+		  fclose(fp);
+		  strcpy(dls->URL, filename);
+		}
+	      else
+		{
+		  //fprintf(stderr, "Not found\n");
+		  sprintf(dls->URL, "%sddd-unavailable-LM.html", docPrefix);
+		}
+	    }
+	  else
+	    sprintf(dls->URL, "%sddd-unavailable.html", docPrefix);
+	}
+      sprintf(filename, "ddd-%05o-%s.tsv", id, aliasTsv);
+      fp = fopen(filename, "rt");
+      if (fp == NULL)
+	{
+	  fprintf(stderr, "Using default configuration because file %s not found.\n", filename);
+	  dddNormalize(dls);
+	  continue;
+	}
+      fprintf(stderr, "Opening %s\n", filename);
+      for (i = 0; i < MAX_DOWNLINK_LIST; i++)
+	{
+	  // Note that we cannot use `fscanf` to read lines from these files,
+	  // because in a tab-delimited file it's fine for fields to be empty,
+	  // but %s will simply skip right past them.  So we have to read entire
+	  // lines an find the tab delimiters ourself.
+	  int n, offset;
+	  char *s, *ss, line[200], *offsetField, *varField, *scalerField, *formatField,
+	    *formatterField, *unitField;
+	  if (NULL == fgets(line, sizeof(line), fp))
+	    {
+	      fprintf(stderr, "Records read from %s:  %d\n", filename, i);
+	      memset(&(dls->FieldSpecs[i]), 0, sizeof(FieldSpec_t) * (MAX_DOWNLINK_LIST - i));
+	      break;
+	    }
+	  line[strcspn(line, "\r\n")] = 0; // remove trailing CR or LF.
+	  if (line[0] == 0 || line[0] == '#')
+	    {
+	      i--;
+	      continue;
+	    }
+	  //fprintf(stderr, "\tParsing line: %s", line);
+	  // Detect a couple of special cases.
+	  if (strstr(line, "\t") == NULL) // No tabs?
+	    {
+	      if (NULL != strstr(line, "://") /*!strncmp(line, "http", 4)*/ )
+		strcpy(dls->URL, line);
+	      else
+		strcpy(dls->Title, line);
+	      i--;
+	      continue;
+	    }
+	  for (s = line, n = 0; n < 6; s = ss + 1, n++)
+	    {
+	      for (ss = s; *ss != 0; ss++)
+		if (*ss == '\t')
+		  break;
+	      if (*ss == 0 && n < 5)
+		{
+		  fprintf(stderr, "Ill-formed line %d in %s\n", i, filename);
+		  exit(1);
+		}
+	      *ss = 0;
+	      if (n == 0)
+		offsetField = s;
+	      else if (n == 1)
+		varField = s;
+	      else if (n == 2)
+		scalerField = s;
+	      else if (n == 3)
+		formatField = s;
+	      else if (n == 4)
+		formatterField = s;
+	      else if (n == 5)
+		unitField = s;
+	    }
+	  if (!isUnsigned(offsetField) &&
+	      !(offsetField[0] == '-' && isUnsigned(&offsetField[1])))
+	    {
+	      fprintf(stderr, "Non-numeric field %s at line %d in %s\n",
+		      offsetField, i, filename);
+	      exit(1);
+	    }
+	  offset = atoi(offsetField);
+	  fieldSpec = &(dls->FieldSpecs[i]);
+	  fieldSpec->IndexIntoList = offset;
+	  fieldSpec->Name[0] = 0;
+	  fieldSpec->Scale = 0;
+	  fieldSpec->Format = FMT_SP;
+	  fieldSpec->Formatter = NULL;
+	  fieldSpec->Unit[0] = 0;
+	  if (offset == -1)
+	    continue;
+	  // For the scaler field, at the moment I only recognize items of the
+	  // form %u or B%u.
+	  if (isUnsigned(scalerField))
+	    fieldSpec->Scale = atoi(scalerField);
+	  else if (scalerField[0] == 'B' && isUnsigned(&scalerField[1]))
+	    fieldSpec->Scale = 1 << atoi(&scalerField[1]);
+	  else
+	    fprintf(stderr, "Unrecognized scaler field in %s: %s\n", filename, scalerField);
+	  // Only the formats in `enum Format_t` are recognized.
+	  if (!strcmp(formatField, "FMT_SP"))
+	    fieldSpec->Format = FMT_SP;
+	  else if (!strcmp(formatField, "FMT_DP"))
+	    fieldSpec->Format = FMT_DP;
+	  else if (!strcmp(formatField, "FMT_OCT"))
+	    fieldSpec->Format = FMT_OCT;
+	  else if (!strcmp(formatField, "FMT_2OCT"))
+	    fieldSpec->Format = FMT_2OCT;
+	  else if (!strcmp(formatField, "FMT_DEC"))
+	    fieldSpec->Format = FMT_DEC;
+	  else if (!strcmp(formatField, "FMT_2DEC"))
+	    fieldSpec->Format = FMT_2DEC;
+	  else if (!strcmp(formatField, "FMT_USP"))
+	    fieldSpec->Format = FMT_USP;
+	  else if (!strcmp(formatField, "FMT_2DECL"))
+	    fieldSpec->Format = FMT_2DECL;
+	  else
+	    fprintf(stderr, "Unrecognized format field in %s: %s\n", filename, formatField);
+	  // Similarly for the formatter field.
+	  if (strlen(formatterField) == 0)
+	    ;
+	  else if (!strcmp(formatterField, "FormatUnknown"))
+	    ;
+	  else if (!strcmp(formatterField, "FormatRequired"))
+	    ;
+	  else if (!strcmp(formatterField, "FormatOTRUNNION"))
+	    fieldSpec->Formatter = &FormatOTRUNNION;
+	  else if (!strcmp(formatterField, "FormatEarthOrMoonSP"))
+	    fieldSpec->Formatter = &FormatEarthOrMoonSP;
+	  else if (!strcmp(formatterField, "FormatEarthOrMoonDP"))
+	    fieldSpec->Formatter = &FormatEarthOrMoonDP;
+	  else if (!strcmp(formatterField, "FormatEpoch"))
+	    fieldSpec->Formatter = &FormatEpoch;
+	  else if (!strcmp(formatterField, "FormatAdotsOrOga"))
+	    fieldSpec->Formatter = &FormatAdotsOrOga;
+	  else if (!strcmp(formatterField, "FormatCDUT"))
+	    fieldSpec->Formatter = &FormatCDUT;
+	  else if (!strcmp(formatterField, "FormatDELV"))
+	    fieldSpec->Formatter = &FormatDELV;
+	  else if (!strcmp(formatterField, "FormatRDOT"))
+	    fieldSpec->Formatter = &FormatRDOT;
+	  else if (!strcmp(formatterField, "FormatHalfDP"))
+	    fieldSpec->Formatter = &FormatHalfDP;
+	  else if (!strcmp(formatterField, "FormatGtc"))
+	    fieldSpec->Formatter = &FormatGtc;
+	  else if (!strcmp(formatterField, "FormatHMEAS"))
+	    fieldSpec->Formatter = &FormatHMEAS;
+	  else if (!strcmp(formatterField, "FormatXACTOFF"))
+	    fieldSpec->Formatter = &FormatXACTOFF;
+	  else if (!strcmp(formatterField, "FormatLrRange"))
+	    fieldSpec->Formatter = &FormatLrRange;
+	  else if (!strcmp(formatterField, "FormatLrVz"))
+	    fieldSpec->Formatter = &FormatLrVz;
+	  else if (!strcmp(formatterField, "FormatLrVy"))
+	    fieldSpec->Formatter = &FormatLrVy;
+	  else if (!strcmp(formatterField, "FormatLrVx"))
+	    fieldSpec->Formatter = &FormatLrVx;
+	  else if (!strcmp(formatterField, "FormatRrRange"))
+	    fieldSpec->Formatter = &FormatRrRange;
+	  else if (!strcmp(formatterField, "FormatRrRangeRate"))
+	    fieldSpec->Formatter = &FormatRrRangeRate;
+	  else
+	    fprintf(stderr, "Unrecognized formatter field in %s: %s\n", filename, formatterField);
+	  // Units.
+	  if (!strcmp(unitField, "TBD"))
+	    unitField[0] = 0;
+	  strcpy(fieldSpec->Unit, unitField);
+#ifdef SHOW_WORD_NUMBERS
+	  if (fieldSpec->Format == FMT_SP ||
+	      fieldSpec->Format == FMT_OCT ||
+	      fieldSpec->Format == FMT_DEC ||
+	      fieldSpec->Format == FMT_USP) // Single precision
+	    sprintf(fieldSpec->Name, "%d%c ", (offset / 2) + 1,
+		    (offset % 2) ? 'b' : 'a');
+	  else if (0 == (offset & 1)) // Double precision aligned at even address
+	    sprintf(fieldSpec->Name, "%d ", (offset / 2) + 1);
+	  else // Double precision aligned at odd address
+	    sprintf(fieldSpec->Name, "%db,%da ", (offset / 2) + 1, (offset / 2) + 2);
+	  strcat(fieldSpec->Name, varField);
+#else
+	  strcpy(fieldSpec->Name, varField);
+#endif
+	  strcat(fieldSpec->Name, "=");
+	}
+      dls->numFieldSpecs = i;
+      fclose(fp);
+      dddNormalize(dls);
+    }
+
+  printSpecs("after.txt");
+  return CmOrLm;
+}
 
 //---------------------------------------------------------------------------
 // Print a double-precision number.  I cut-and-pasted this from CheckDec.c,
@@ -1969,7 +1137,17 @@ PrintUSP (int *Ptr, int Scale, int row, int col)
 static void
 PrintField (const FieldSpec_t *FieldSpec)
 {
-  int row, col, *Ptr;
+  int row, col, *Ptr, nameLength;
+  FieldSpecName_t fsn;
+
+  strcpy(fsn, FieldSpec->Name);
+  nameLength = strlen(fsn);
+#define USE_COLONS
+#ifdef USE_COLONS
+  strcpy(&fsn[nameLength-1], ": ");
+  nameLength += 1;
+#endif
+
   row = FieldSpec->Row;
   col = FieldSpec->Col;
   if (row == 0 && col == 0)
@@ -1977,12 +1155,21 @@ PrintField (const FieldSpec_t *FieldSpec)
       row = LastRow;
       col = LastCol;
     }
-  LastCol = col + 20;
+  if (FieldSpec->IndexIntoList < 0)
+    {
+      if (col > 1)
+	{
+	  LastCol = 1;
+	  LastRow = row + 1;
+	}
+      return;
+    }
+  LastCol = col + DISPLAYED_FIELD_WIDTH;
   if (LastCol < Swidth)
     LastRow = row;
   else
     {
-      LastCol = 0;
+      LastCol = 1;
       LastRow = row + 1;
     }
   if (FieldSpec->IndexIntoList < 0)
@@ -1993,50 +1180,78 @@ PrintField (const FieldSpec_t *FieldSpec)
       s = (*FieldSpec->Formatter) (FieldSpec->IndexIntoList,
       				   FieldSpec->Scale, FieldSpec->Format);
       if (s != NULL)
-        sprintf (&Sbuffer[row][col], "%s%s", FieldSpec->Name, s);
+        sprintf (&Sbuffer[row][col], "%s%s", fsn, s);
     }
   else
     {
-      sprintf (&Sbuffer[row][col], "%s", FieldSpec->Name);
-      col += strlen (FieldSpec->Name);
+      sprintf (&Sbuffer[row][col], "%s", fsn);
+      col += nameLength;
       Ptr = &DownlinkListBuffer[FieldSpec->IndexIntoList];
       switch (FieldSpec->Format)
 	{
 	case FMT_SP:
-	  PrintSP (Ptr, FieldSpec->Scale, row, col);
+	  if (Ptr[0] == -1)
+	    sprintf (&Sbuffer[row][col], "None");
+	  else
+	    PrintSP (Ptr, FieldSpec->Scale, row, col);
 	  break;
 	case FMT_DP:
-	  PrintDP (Ptr, FieldSpec->Scale, row, col);
+	  if (Ptr[0] == -1 || Ptr[1] == -1)
+	    sprintf (&Sbuffer[row][col], "None");
+	  else
+	    PrintDP (Ptr, FieldSpec->Scale, row, col);
 	  break;
 	case FMT_OCT:
-	  sprintf (&Sbuffer[row][col], "%05o", Ptr[0]);
+	  if (Ptr[0] == -1)
+	    sprintf (&Sbuffer[row][col], "None");
+	  else
+	    sprintf (&Sbuffer[row][col], "%05o", Ptr[0]);
 	  break;
 	case FMT_2OCT:
-	  sprintf (&Sbuffer[row][col], "%05o%05o", Ptr[0], Ptr[1]);
+	  if (Ptr[0] == -1 || Ptr[1] == -1)
+	    sprintf (&Sbuffer[row][col], "None");
+	  else
+	    sprintf (&Sbuffer[row][col], "%05o%05o", Ptr[0], Ptr[1]);
 	  break;
 	case FMT_DEC:
-	  sprintf (&Sbuffer[row][col], "%+d", Ptr[0]);
+	  if (Ptr[0] == -1)
+	    sprintf (&Sbuffer[row][col], "None");
+	  else
+	    sprintf (&Sbuffer[row][col], "%+d", Ptr[0]);
 	  break;
 	case FMT_2DEC:
-	  sprintf (&Sbuffer[row][col], "%+d", 0100000 * Ptr[0] + Ptr[1]);
+	  if (Ptr[0] == -1 || Ptr[1] == -1)
+	    sprintf (&Sbuffer[row][col], "None");
+	  else
+	    sprintf (&Sbuffer[row][col], "%+d", 0100000 * Ptr[0] + Ptr[1]);
 	  break;
 	case FMT_USP:		
-	  PrintUSP (Ptr, FieldSpec->Scale, row, col);
+	  if (Ptr[0] == -1)
+	    sprintf (&Sbuffer[row][col], "None");
+	  else
+	    PrintUSP (Ptr, FieldSpec->Scale, row, col);
+	  break;
+	case FMT_2DECL:
+	  if (Ptr[0] == -1 || Ptr[1] == -1)
+	    sprintf (&Sbuffer[row][col], "None");
+	  else
+	    sprintf (&Sbuffer[row][col], "%+d", 0100000 * Ptr[1] + Ptr[0]);
 	  break;
 	}
     }
 }
 
 // Print an entire downlink list.
-
+char *DocumentationURL = (char *) DEFAULT_URL;
 void
-PrintDownlinkList (const DownlinkListSpec_t *Spec)
+PrintDownlinkList (DownlinkListSpec_t *Spec)
 {
-  // This is a global pointer to a function which can override PrintDownlinkList().
+  // `ProcessDownlinkList` is a pointer to a function which can override PrintDownlinkList().
   // The idea is that PrintDownlinkList() is the default processor, and can be
   // used for printing "raw" downlink data, but it can be overridden if the buffered
   // downlink list needs to be processed differently, for example to be printed on 
   // a simulated MSK CRT.
+  DocumentationURL = (char *) Spec->URL;
   if (ProcessDownlinkList != NULL)
     {
       (*ProcessDownlinkList) (Spec);
@@ -2056,6 +1271,26 @@ PrintDownlinkList (const DownlinkListSpec_t *Spec)
     }
 }
 
+// Print an entire downlink list for the early Block I protocol.
+FieldSpec_t markSpec = {
+
+};
+void
+PrintDownlinkListEarly1 (DownlinkListSpec_t *Spec, int *marks, int numMarks)
+{
+  int i;
+  DocumentationURL = (char *) Spec->URL;
+  Sclear ();
+  sprintf (&Sbuffer[0][0], "%s", Spec->Title);
+  for (i = 0; i < MAX_DOWNLINK_LIST; i++)
+    {
+      if (i && !Spec->FieldSpecs[i].IndexIntoList)
+	break;		// End of field-list.
+      PrintField (&Spec->FieldSpecs[i]);
+    }
+  Swrite ();
+}
+
 //---------------------------------------------------------------------------
 // Print an "erasable dump" downlink list.
 
@@ -2064,6 +1299,7 @@ DecodeErasableDump (char *Title)
 {
   int i, j, row, col;
   Sclear ();
+  DocumentationURL = (char *) DEFAULT_URL;
   sprintf (&Sbuffer[0][0], "%s", Title);
   sprintf (&Sbuffer[1][0], "ID=%05o  SYNC=%05o  PASS=%o  EBANK=%o  TIME1=%05o",
            DownlinkListBuffer[0], DownlinkListBuffer[1],
@@ -2077,7 +1313,8 @@ DecodeErasableDump (char *Title)
           sprintf (&Sbuffer[row][col], "%03o:", j);
 	  col += 4;
 	}
-      sprintf (&Sbuffer[row][col], " %05o %05o", DownlinkListBuffer[j + 4], DownlinkListBuffer[j + 5]);
+      sprintf (&Sbuffer[row][col], " %05o %05o", DownlinkListBuffer[j + 4],
+	       DownlinkListBuffer[j + 5]);
       col += 12;
       if (0 == (i & 3))
         {
@@ -2090,13 +1327,33 @@ DecodeErasableDump (char *Title)
 
 //----------------------------------------------------------------------------
 // If you want to print digital downlinks to stdout, just keep feeding 
-// DecodeDigitalDownlink the data read from output channels 013, 034, and 035
-// as it arrives.  (Actually, you can just feed it data for all AGC output
-// channels, if you like.)  The function takes care of buffering the data and
-// parsing it out, so there's nothing else you have to do.
+// `DecodeDigitalDownlink` the data read from output channels 013, 034, and 035
+// (or 011 and 014 for Block I) as it arrives.  (Actually, you can just feed it
+// data for all AGC output channels, if you like.)  The function takes care of
+// buffering the data and parsing it out, so there's nothing else you have to
+// do.  There are actually 4 different "protocols" used, depending on the AGC
+// software version, and `DecodeDigitalDownlink` simply calls the appropriate
+// one.
 
 void
 DecodeDigitalDownlink (int Channel, int Value, int CmOrLm)
+{
+  void DecodeEarly1(int Channel, int Value, int CmOrLm);
+  void DecodeLate1(int Channel, int Value, int CmOrLm);
+  void DecodeEarly2(int Channel, int Value, int CmOrLm);
+  void DecodeMidOrLate2(int Channel, int Value, int CmOrLm);
+  if (early1)
+    return DecodeEarly1(Channel, Value, CmOrLm);
+  else if (late1)
+    return DecodeLate1(Channel, Value, CmOrLm);
+  else if (early2)
+    return DecodeEarly2(Channel, Value, CmOrLm);
+  else if (mid2 || late2)
+    return DecodeMidOrLate2(Channel, Value, CmOrLm);
+}
+
+void
+DecodeMidOrLate2 (int Channel, int Value, int CmOrLm)
 {
   static int WordOrderBit = 0, Any = 0;
   
@@ -2129,21 +1386,8 @@ DecodeDigitalDownlink (int Channel, int Value, int CmOrLm)
 	      DownlinkListExpected = 260; 
 	      DownlinkListZero = -1;
 	    }
-	  else if (Value == 077774)	// LM orbital maneuvers, CM powered list.
-	    DownlinkListExpected = 200;
-	  else if (Value == 077777)	// LM or CM coast align
-	    DownlinkListExpected = 200;
-	  else if (Value == 077775)	// LM or CM rendezvous/prethrust
-	    DownlinkListExpected = 200;
-	  else if (Value == 077773)	// LM descent/ascent, CM program 22 list
-	    DownlinkListExpected = 200;
-	  else if (Value == 077772)	// Lunar surface align
-	    DownlinkListExpected = 200;
-	  else if (Value == 077776)	// LM AGS initialization/update, CM entry/update
-	    DownlinkListExpected = 200;
 	  else
-	    goto AbortList;
-	  //printf ("Started downlink of type 0%o\n", Value);
+	    DownlinkListExpected = 200;
 	}
       else
         {
@@ -2160,7 +1404,7 @@ DecodeDigitalDownlink (int Channel, int Value, int CmOrLm)
         goto AbortList;
       if (DownlinkListCount == 1)
         { 
-	  if (Value != 077340)	// sync word
+	  if (Value != 077340 && Value != 0437)	// sync word
             goto AbortList;
 	  if (WordOrderBit)
 	    goto AbortList;
@@ -2181,6 +1425,7 @@ DecodeDigitalDownlink (int Channel, int Value, int CmOrLm)
   // End of the list!  Do something with the data.
   if (DownlinkListCount >= DownlinkListExpected)
     {
+      int i;
       static char LMdump[] = "LM erasable dump downlinked.";
       static char CMdump[] = "CM erasable dump downlinked.";
       switch (DownlinkListBuffer[0])
@@ -2191,43 +1436,19 @@ DecodeDigitalDownlink (int Channel, int Value, int CmOrLm)
 	case 01777:
 	  DecodeErasableDump (CMdump);
 	  break;
-	case 077774:
-	  if (CmOrLm)
-	    PrintDownlinkList (DownlinkListSpecs[DL_CM_POWERED_LIST]);
-	  else
-	    PrintDownlinkList (DownlinkListSpecs[DL_LM_ORBITAL_MANEUVERS]);
-	  break;
-	case 077777:
-	  if (CmOrLm)
-	    PrintDownlinkList (DownlinkListSpecs[DL_CM_COAST_ALIGN]);
-	  else
-	    PrintDownlinkList (DownlinkListSpecs[DL_LM_COAST_ALIGN]);
-	  break;
-	case 077775:
-	  if (CmOrLm)
-	    PrintDownlinkList (DownlinkListSpecs[DL_CM_RENDEZVOUS_PRETHRUST]);
-	  else
-	    PrintDownlinkList (DownlinkListSpecs[DL_LM_RENDEZVOUS_PRETHRUST]);
-	  break;
-	case 077773:
-	  if (CmOrLm)
-	    PrintDownlinkList (DownlinkListSpecs[DL_CM_PROGRAM_22]);
-	  else
-	    PrintDownlinkList (DownlinkListSpecs[DL_LM_DESCENT_ASCENT]);
-	  break;
-	case 077772:
-	  PrintDownlinkList (DownlinkListSpecs[DL_LM_LUNAR_SURFACE_ALIGN]);
-	  break;
-	case 077776:
-	  if (CmOrLm)
-	    PrintDownlinkList (DownlinkListSpecs[DL_CM_ENTRY_UPDATE]);
-	  else
-	    PrintDownlinkList (DownlinkListSpecs[DL_LM_AGS_INITIALIZATION_UPDATE]);
-	  break;
 	default:
-	  Sclear ();
-	  sprintf (&Sbuffer[0][0], "Unknown list type downlinked.");
-	  Swrite ();
+	  for (i = 0; i < numDownlists; i++)
+	    if (DownlistSpecifications[i].id == DownlinkListBuffer[0])
+	      {
+		PrintDownlinkList (&DownlistSpecifications[i]);
+		break;
+	      }
+	  if (i >= numDownlists)
+	    {
+	      Sclear ();
+	      sprintf (&Sbuffer[0][0], "Unknown list type (%05o) downlinked.", DownlinkListBuffer[0]);
+	      Swrite ();
+	    }
 	  break;
 	}
       Any = 1;
@@ -2248,4 +1469,165 @@ AbortList:
   return;
 }
 
+// Note that this is based on code from piTelemetry.py rather than on
+// `DecodeMidOrLate2`, because I don't see any longer how `DecodeMidOrLate2`
+// works, particularly in regard to ID 77772 of Zerlina, which has 208
+// downlinks.  Plus, this is tremendously cleaner.
+void
+DecodeEarly2 (int Channel, int Value, int CmOrLm)
+{
+  static int WordOrderBit = 0, pending;
+  int i;
+
+  if (Channel == 034 || Channel == 035)
+    DownlinkListBuffer[DownlinkListCount++] = Value;
+  else if (Channel == 013)
+    {
+      WordOrderBit = Value & 000100;
+      if (WordOrderBit == 0)
+	{
+	  if (DownlinkListCount == 0)
+	    return;
+	  pending = DownlinkListBuffer[--DownlinkListCount];
+
+	  for (i = 0; i < numDownlists; i++)
+	    if (DownlistSpecifications[i].id == DownlinkListBuffer[0])
+	      {
+		PrintDownlinkList (&DownlistSpecifications[i]);
+		break;
+	      }
+	  if (i >= numDownlists)
+	    {
+	      Sclear ();
+	      sprintf (&Sbuffer[0][0],
+		       "Unknown list type (%05o) downlinked.",
+		       DownlinkListBuffer[0]);
+	      Swrite ();
+	    }
+	  DownlinkListBuffer[0] = pending;
+	  DownlinkListCount = 1;
+	}
+    }
+}
+
+// Based on piTelemetry.py.
+void
+DecodeLate1 (int Channel, int Value, int CmOrLm)
+{
+  static int pending = -1, marks[20], numMarks = 0;
+
+  if (Channel == 011) // OUT1
+    {
+      int wordOrder;
+      if (pending == -1)
+        return;
+      wordOrder = Value & 000400;
+      if (wordOrder && pending != 074000 && (pending & 074000) == 074000) // MARK word.
+	{
+	  marks[numMarks++] = pending;
+	  pending = -1;
+	  return;
+	}
+      while (numMarks > 0 && (
+	  DownlinkListCount == 48 ||
+	  DownlinkListCount == 49 ||
+	  DownlinkListCount == 50 ||
+	  DownlinkListCount == 97 ||
+	  DownlinkListCount == 98 ||
+	  DownlinkListCount == 99
+	  ))
+	{
+	  DownlinkListBuffer[DownlinkListCount++] = marks[0];
+	  numMarks--;
+	  for (int i = 0; i < numMarks; i++)
+	    marks[i] = marks[i + 1];
+	}
+      if (!wordOrder) // Data word.
+	DownlinkListBuffer[DownlinkListCount++] = pending;
+      else if (pending == 074000)
+	DownlinkListBuffer[DownlinkListCount++] = pending;
+      else // ID word
+	{
+	  int i;
+	  for (i = 0; i < numDownlists; i++)
+	    if (DownlistSpecifications[i].id == DownlinkListBuffer[0])
+	      {
+		PrintDownlinkList (&DownlistSpecifications[i]);
+		break;
+	      }
+	  if (i >= numDownlists)
+	    {
+	      Sclear ();
+	      sprintf (&Sbuffer[0][0],
+		       "Unknown list type (%05o) downlinked.",
+		       DownlinkListBuffer[0]);
+	      Swrite ();
+	    }
+	  DownlinkListBuffer[0] = pending;
+	  DownlinkListCount = 1;
+	  numMarks = 0;
+	}
+      pending = -1;
+    }
+  else if (Channel == 014) // CPU channel used for downlink data
+    pending = Value;
+
+}
+
+// Based on piTelemetry.py, using the simpler/later of the two algorithms
+// provided there.
+void
+DecodeEarly1 (int Channel, int Value, int CmOrLm)
+{
+#define MAX_MARKS 31
+  static int initialized = 0, pending = -1, numFieldSpecs = 0,
+      marks[MAX_MARKS], numMarks = 0;
+  static FieldSpec_t *tsv;
+  int i, j, k;
+  if (!initialized)
+    {
+      initialized = 1;
+      tsv = DownlistSpecifications[0].FieldSpecs;
+      numFieldSpecs = DownlistSpecifications[0].numFieldSpecs;
+      for (i = 0; i < MAX_DOWNLINK_LIST; DownlinkListBuffer[i++] = -1);
+    }
+  if (Channel == 011 && pending != -1) // OUT1
+    {
+      int wordOrder;
+      wordOrder = Value & 000400;
+      if (wordOrder)
+	DownlinkListBuffer[DownlinkListCount++] = pending;
+      else if ((pending & 074000) != 0)
+	{
+	  if (numMarks < MAX_MARKS) marks[numMarks++] = pending; // relay word
+	}
+      else if ((pending & 076000) == 002000)
+	{
+	  if (numMarks < MAX_MARKS) marks[numMarks++] = pending; // character-indicator word
+	}
+      else
+	{
+	  DownlinkListBuffer[DownlinkListCount++] = pending; // index word
+	  if (pending == 0) // End of downlist.
+	    {
+	      for (i = 0, j = DownlinkListCount - 1; i < j; i++, j--)
+		{
+		  k = DownlinkListBuffer[i];
+		  DownlinkListBuffer[i] = DownlinkListBuffer[j];
+		  DownlinkListBuffer[j] = k;
+		}
+	      for (i = 0; i < numMarks; i++)
+		DownlinkListBuffer[DownlinkListCount++] = marks[i];
+	      numMarks = 0;
+	      PrintDownlinkList (&DownlistSpecifications[0]);
+	      for (i = 0; i < MAX_DOWNLINK_LIST; DownlinkListBuffer[i++] = -1);
+	      DownlinkListCount = 0;
+	    }
+	}
+      pending = -1;
+    }
+  else if (Channel == 014) // OUT4.
+    pending = Value;
+  return;
+}
 

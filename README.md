@@ -1,6 +1,8 @@
 Virtual Apollo Guidance Computer
 ================================
 
+<!---
+Apparently, Travis CI no longer has a build tier that's free for open source, so I'm removing the build-status display for it.
 ### Build status
 
 | Travis CI (Linux) |
@@ -9,6 +11,7 @@ Virtual Apollo Guidance Computer
 
 [travis-image]: https://travis-ci.org/virtualagc/virtualagc.svg?branch=master
 [travis-site]: https://travis-ci.org/virtualagc/virtualagc/branches
+-->
 
 The [Apollo](https://en.wikipedia.org/wiki/Apollo_(spacecraft)) spacecraft used for lunar missions in the late 1960's and early 1970's was really two different spacecraft, the [Command Module (CM)](https://en.wikipedia.org/wiki/Apollo_command_and_service_module) and the [Lunar Module (LM)](https://en.wikipedia.org/wiki/Apollo_Lunar_Module). The CM was used to get the three astronauts to the moon, and back again. The LM was used to land two of the astronauts on the moon while the third astronaut remained in the CM, in orbit around the moon.
 
@@ -143,13 +146,17 @@ To build, simply `cd` into the directory containing the source and do:
 
 `make`
 
-Note: Do not `configure` and do not `make install`. While there is a `configure` script provided, it is presently used only for setting up builds of a couple of now-obsoleted programs, and it does not matter whether you run it or not nor whether it succeeds or fails. If the build does not complete because of a difference when comparing the `bin` files then you can rebuild with `make -k` to keep going. This however might mask other issues.
+**Note**:
 
-You will find that this has created a directory `VirtualAGC/temp/lVirtualAGC/`. 
+- Do not `configure` and do not `make install`. While there is a `configure` script provided, it is presently used only for setting up builds of a couple of now-obsoleted programs, and it does not matter whether you run it or not nor whether it succeeds or fails. If the build does not complete because of a difference when comparing the `bin` files then you can rebuild with `make -k` to keep going. This however might mask other issues.
+
+- Do not parallelise make, i.e. do not run `make -j$(nproc)`. This will prevent copying of files to correct places.
+
+The build results can be found at `VirtualAGC/temp/lVirtualAGC/`, which contain the binaries and required resources in the correct paths. The VirtualAGC binary can be run at `VirtualAGC/temp/lVirtualAGC/bin/VirtualAGC`.
 
 To match the default setup of the installer program execute the following:
 
-`mv yaAGC/VirtualAGC/temp/lVirtualAGC ~/VirtualAGC`
+`mv VirtualAGC/temp/lVirtualAGC ~/VirtualAGC`
 
 You can make a desktop icon called *Virtual AGC* that links to `VirtualAGC/bin/VirtualAGC`. The image normally used for the desktop icon is found at `VirtualAGC/bin/ApolloPatch2.png`.
 

@@ -91,6 +91,9 @@
 #		2016-11-29 RSB	Fixed formation of .app sub-directories for Mac.
 #		2017-08-24 RSB	Added wxFLAGS.
 #		2017-12-11 RSB	Added yaDSKY2/*.canned files.
+#		2025-03-03 RSB	Accounted for ddd-*.tsv files in Resources/
+#		2025-04-03 RSB	Same for yaTelemetry/documentation/.
+#		2025-04-20 RSB	And tsv/documentation files in piPeripheral/.
 
 APP=VirtualAGC
 # *** BEWARE! ***  The MISSIONS variable is normally inherited from the 
@@ -144,6 +147,12 @@ ifeq "${YADEDA_SUFFIX}" ""
 YADEDA2=
 else
 YADEDA2=-DYADEDA2
+endif
+
+# This is used only for Mac OS, and can be overridden from the command line
+# of the Makefile:
+ifndef AGC_SCALE
+AGC_SCALE=1.0
 endif
 
 # This is just so that when I build it, I can insure that it will be statically or
@@ -237,7 +246,8 @@ temp/lVirtualAGC/bin temp/VirtualAGC/bin temp/VirtualAGC.app/Contents/MacOS:
 
 # This target creates a Resources directory for any of the installation
 # packages.  Except for gtk+ related stuff, none of the contents of the
-# Resources directory vary by target.
+# Resources directory vary by target.  This target assumes that the associated
+# bin directory has already been populated.
 .PHONY: temp/lVirtualAGC/Resources
 temp/lVirtualAGC/Resources temp/VirtualAGC/Resources temp/VirtualAGC.app/Contents/Resources:
 	mkdir -p $@/pixmaps $@/source
@@ -263,7 +273,10 @@ endif
 	-rm -rf $@/images-yaDSKYb1/CVS $@/images-yaDSKYb1/.xvpics
 	${CP} ../jWiz/*.jpg $@
 	-rm -rf $@/pixmaps/yaDEDA/CVS $@/pixmaps/yaDEDA/.xvpics
-	${CP} ../yaTelemetry/*.jpg $@
+	${CP} ../piPeripheral/ddd-*.tsv $@
+	${CP} ../piPeripheral/documentation $@
+	${CP} ../yaTelemetry/*.jpg ../yaAGC/ddd-*.tsv $@
+	${CP} ../yaTelemetry/documentation $@
 	${CP} ../Contributed/LM_Simulator $@
 	${CP} VirtualAGC.tcl $@
 	-rm -rf $@/LM_Simulator/CVS
@@ -272,6 +285,8 @@ endif
 	-rm -rf $@/LM_Simulator/Documentation/CVS
 	${CP} template.app/Contents/Resources/VirtualAGC.icns $@
 ifeq "${EXT}" ".exe"
+# Copy DLLs.
+ifdef IGNORE_THIS
 	${CP} /usr/local/bin/SDL.dll $@
 	# Very old usage.
 	#for n in history pthread readline libgnurx ; \
@@ -291,7 +306,11 @@ ifeq "${EXT}" ".exe"
 	do \
 		${CP} c:/mingw/bin/$$n.dll $@ ; \
 	done
-endif
+else # of IGNORE_THIS. Do this instead:
+	echo 'start /b ..\bin\VirtualAGC.exe' >$@/VirtualAGC.bat
+	for n in ../bin/*.exe ; do ldd $$n ; done | egrep 'ucrt64|home' | awk '{print $$3}' | sort -u | xargs -i cp {} $@
+endif # of IGNORE_THIS
+endif # of EXT == .exe
 	${CP} ../Contributed/SyntaxHighlight $@
 	rm -rf `find $@/SyntaxHighlight -name ".svn"`
 
@@ -371,7 +390,9 @@ endif
 create-bundle:
 	-rm -rf temp/VirtualAGC.app
 	mkdir -p temp/VirtualAGC.app/Contents
-	${CP} template.app/Contents/Info.plist temp/VirtualAGC.app/Contents
+	sed "s@<string>1.0</string>@<string>$(AGC_SCALE)</string>@" \
+	    template.app/Contents/Info.plist \
+	    >temp/VirtualAGC.app/Contents/Info.plist
 
 # The Mac application tarball requires a file called Terminator.app.tar.bz2 in the 
 # parent directory of yaAGC.  This file is obtained by downloading terminator.dmg
@@ -420,6 +441,7 @@ temp/VirtualAGC.app : % : VirtualAGC create-bundle %/Contents/MacOS %/Contents/R
 	  sed ${INPLACE} "s/VirtualAGC/$$n/" $@/Contents/MacOS/$$n.app/Contents/Info.plist ; \
 	  mv $@/Contents/MacOS/$$n $@/Contents/MacOS/$$n.app/Contents/MacOS ; \
 	done
+	mv $@/Contents/Resources/documentation $@/Contents/MacOS/yaTelemetry.app/Contents/Resources
 	${CP} ../scripts/SimStop $@/Contents/MacOS
 	chmod +x $@/Contents/MacOS/SimStop
 ifeq "$YADSKY2" ""	

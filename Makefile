@@ -204,6 +204,10 @@
 #		2022-11-17 RSB	Added Aurora 88.
 #		2023-05-02 RSB  Added Corona 261.
 #		2024-01-25 RSB  Added Skylark 48
+#		2024-05-13 RSB	Added Comanche 67
+#		2024-05-21 RSB	Added Comanche 72 and Manche72R3.
+#		2025-01-11 RSB	Added TicTacToe.
+#		2025-07-19 RSB	Added HAS_CLOCK_GETTIME option for WIN32 builds.
 #
 # The build box is always Linux for cross-compiles.  For native compiles:
 #	Use "make MACOSX=yes" for Mac OS X.
@@ -243,7 +247,7 @@
 # 	"make FORCE_clang=yes FORCE_cc=/usr/bin/clang-3.9 FORCE_CC=/usr/bin/clang++-3.9".
 
 # NVER is the overall version code for the release.
-NVER:=\\\"2024-03-06\\\"
+NVER:=\\\"2025-01-02\\\"
 DATE:=`date +%Y%m%d`
 
 # DON'T CHANGE THE FOLLOWING SWITCH *********************************
@@ -418,10 +422,13 @@ endif
 ifdef WIN32
 export WIN32
 EXT=.exe
+ifdef HAS_CLOCK_GETTIME
+CFLAGS0+=-DHAS_CLOCK_GETTIME
+endif
 CFLAGS0+=-I/usr/local/include
 CFLAGS+=-I/usr/local/include
 LIBS+=-L/usr/local/lib
-LIBS+=-L/usr/lib
+LIBS+=-L$(MINGW_PREFIX)/lib
 LIBS+=-lkernel32
 LIBS+=-lwsock32
 CURSES=../yaAGC/random.c
@@ -475,7 +482,8 @@ MISSIONS += Comanche051 Artemis071 Luminary178 Luminary163 Luminary173
 MISSIONS += SundanceXXX Sundance306ish Comanche044 Comanche045 Manche45R2
 # MISSIONS += LUM99R2
 MISSIONS += Luminary096 LM131R1 Sunrise45 Sunrise69 Aurora88
-MISSIONS += Corona261 Skylark048
+MISSIONS += Corona261 Skylark048 Comanche067 Comanche072 Manche72R3
+MISSIONS += TicTacToe
 # ifndef MACOSX
 MISSIONS += Solarium055 TRIVIUM TRIVIUM-repaired
 # endif
@@ -489,7 +497,7 @@ cbMISSIONS += LUM69R2 Luminary097 Luminary098 Luminary178
 cbMISSIONS := $(patsubst %,%.cbp,$(cbMISSIONS))
 
 # The base set of targets to be built always.
-SUBDIRS = Tools yaLEMAP yaAGC yaAGS yaYUL ControlPulseSim yaUniverse
+SUBDIRS = yaAGC Tools yaLEMAP yaAGS yaYUL ControlPulseSim yaUniverse
 SUBDIRS += yaAGC-Block1-Pultorak yaAGCb1 yaUplinkBlock1 Validation-Block1
 SUBDIRS += yaASM yaOBC
 SUBDIRS += yaLVDC
@@ -761,17 +769,14 @@ ifdef MACOSX
 	@echo "Run Virtual AGC from its desktop icon."
 else
 ifdef WIN32
-	-mkdir "$(WINHOME)/VirtualAGC"
-	cp ${EXTSW} VirtualAGC/temp/lVirtualAGC/* "$(WINHOME)/VirtualAGC"
-	@echo "cd %HOMEPATH%\\VirtualAGC\\Resources" >$(iTMP)
-	@echo "..\\bin\\VirtualAGC" >>$(iTMP)
-	mv $(iTMP) $(WINHOME)/Desktop/VirtualAGC.bat
+	-mkdir "$(WINHOME)/VirtualAGC.installed"
+	cp ${EXTSW} VirtualAGC/temp/lVirtualAGC/* "$(WINHOME)/VirtualAGC.installed"
 	@echo ""
 	@echo "================================================================"
-	@echo "Run Virtual AGC from its desktop launcher."
-	@echo "Or else, run Virtual AGC from a Windows command-line as follows:"
-	@echo "  cd VirtualAGC\\Resources"
-	@echo "  ..\\bin\\VirtualAGC"
+	@echo "Run Virtual AGC from its desktop launcher, or if creation of"
+	@echo "the launcher failed, run from a command-line as follows:"
+	@echo "  cd VirtualAGC.installed\\Resources"
+	@echo "  VirtualAGC.bat"
 	@echo "================================================================"
 else
 	# Create installation directory.
@@ -797,7 +802,7 @@ ifdef SOLARIS
 else
 	@echo "[Desktop Entry]" >$(iTMP)
 	@echo "Encoding=UTF-8" >>$(iTMP)
-	@echo "Name=VirtualAGC" >>$(iTMP)
+	@echo "Name=VirtualAGC Application" >>$(iTMP)
 	@echo "Comment=Virtual AGC GUI Application" >>$(iTMP)
 	@echo "Terminal=false" >>$(iTMP)
 	@echo "Exec=$$HOME/VirtualAGC/bin/VirtualAGC" >>$(iTMP)
@@ -809,7 +814,7 @@ else
 	@echo ""
 	@echo "================================================================"
 	@echo "Run Virtual AGC from its desktop icon.  If the icon doesn't"
-	@echo "exist or doesen't work, run Virtual AGC from a command-line"
+	@echo "exist or doesn't work, run Virtual AGC from a command-line"
 	@echo "as follows:"
 	@echo "  cd ~/VirtualAGC/Resources"
 	@echo "  ../bin/VirtualAGC"

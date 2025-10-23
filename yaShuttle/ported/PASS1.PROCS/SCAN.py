@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 """
 License:    The author, Ron Burkey, declares this program to be in the Public
             Domain, and may be used or modified in any way desired.
@@ -608,7 +608,7 @@ def SCAN():
                     g.PASS = 0;
                 SAVE_TOKEN(g.ID_TOKEN, g.BCD, 7);
                 g.GRAMMAR_FLAGS(g.STMT_PTR, g.GRAMMAR_FLAGS(g.STMT_PTR) \
-                                            or g.MACRO_ARG_FLAG);
+                                            | g.MACRO_ARG_FLAG);
                 g.NUM_OF_PARM[g.MACRO_EXPAN_LEVEL + 1] = \
                     g.VAR_LENGTH(g.SYT_INDEX);
                 PARAMETER_PROCESSING();

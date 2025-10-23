@@ -77,6 +77,10 @@
 #		2016-11-12 RSB	"Permanently" disabled READLINE.
 #		2016-11-18 RSB	Explicitly include socket library in Solaris.
 #		2021-05-13 MKF	Defined WASI and targets yaAGC.wasm, yaAGC.wast.
+#		2025-03-09 RSB	Automatically scrapes DecodeDigitalDownlink.c
+#				to produce the files ddd-*-LM.tsv, ddd-*-CM.tsv,
+#				and ddd-format-lookup.tsv, all for use in 
+#				yaTelemetry.
 
 LIBS=${LIBS2}
 
@@ -214,9 +218,10 @@ else
 CC_WINAGC=i386-mingw32-${cc}
 endif
 
-yaAGC:	$(OBJECTS) checkdec.o libyaAGC.a ${NATIVE_WINAGC}
-	${cc} ${CFLAGS} ${CFLAGS2_NATIVE} -o yaAGC ${OBJECTS} checkdec.o \
-	libyaAGC.a -L. ${STATIC} ${LIBS} -lpthread -lyaAGC -lm ${CURSES}
+yaAGC:	$(OBJECTS) DecodeDigitalDownlinkHardcodes.c checkdec.o libyaAGC.a ${NATIVE_WINAGC}
+	${cc} -pthread ${CFLAGS} ${CFLAGS2_NATIVE} -o yaAGC ${OBJECTS} checkdec.o \
+	libyaAGC.a -L. ${STATIC} ${LIBS} -lyaAGC -lm ${CURSES}
+	#./dddScrape.py <DecodeDigitalDownlinkHardcodes.c
 
 yaAGC.wasm: wasm.o agc_engine.o agc_engine_init.o agc_utilities.o ringbuffer_api.o ringbuffer.o
 	${WASI_SDK_PATH}/bin/wasm-ld ${LDFLAGS2} -o $@ $^
@@ -240,13 +245,13 @@ install:	yaAGC
 	chmod ugo+x ${PREFIX}/bin/yaAGC
 
 checkdec.o: ../Tools/checkdec.c
-	${cc} ${CFLAGS} ${CFLAGS2} -O0 -DNVER=${NVER} -DINSTALLDIR="\"${PREFIX}/bin\"" -c -o $@ $<
+	${cc} -pthread ${CFLAGS} ${CFLAGS2} -O0 -DNVER=${NVER} -DINSTALLDIR="\"${PREFIX}/bin\"" -c -o $@ $<
 
 %.o:	%.c agc_engine.h
 ifdef WASI
 	${WASI_SDK_PATH}/bin/clang ${CFLAGS2} -c -o $@ $<
 else
-	${cc} ${CFLAGS0} ${CFLAGS2} -DNVER=${NVER} -DINSTALLDIR="\"${PREFIX}/bin\"" -c -o $@ $<
+	${cc} -pthread ${CFLAGS0} ${CFLAGS2} -DNVER=${NVER} -DINSTALLDIR="\"${PREFIX}/bin\"" -c -o $@ $<
 endif
 
 #----------------------------------------------------------------------------------

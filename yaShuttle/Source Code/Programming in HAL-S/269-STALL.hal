@@ -1,6 +1,6 @@
 C/ From PDF p. 269 of "Programming in HAL/S".
 
-D INCLUDE TEMPLATE PC_CP LIST
+D INCLUDE TEMPLATE CPL269
 
   STALL:
   PROCEDURE ASSIGN(PCB);
@@ -9,9 +9,9 @@ D INCLUDE TEMPLATE PC_CP LIST
      
 C  REMOVE FROM READY QUEUE
 
-C			   .
-C			   .
-C			   .
+C                          .
+C                          .
+C                          .
 
      NAME(PCB.LAST.NEXT) = NAME(PCB.NEXT);
      NAME(PCB.NEXT.LAST) = NAME(PCB.LAST);

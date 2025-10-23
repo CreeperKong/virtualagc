@@ -106,7 +106,7 @@
 		03/27/17 MAS	Added a bit for Night Watchman's 1.28s-long assertion of
 				its channel 77 bit.
 		03/29/17 RSB    More integer types needed for Windows.
-    04/02/17 MAS  Added a couple of flags used for simulation of the
+		04/02/17 MAS    Added a couple of flags used for simulation of the
                 		TC Trap hardware bug.
 		04/16/17 MAS    Added a voltage counter and input flag for the AGC
 				warning filter, as well as a channel 163 flag for
@@ -121,6 +121,11 @@
 				functions that are safe for us to use.
 		01/29/24 MAS	Added the 4-bit RadarGateCounter for timing
 				RADARUPT generation.
+		03/03/25 RSB	Added `dddConfigure`.  Added a units field to
+				`FieldSpec_t`.
+		03/08/25 RSB	Adjusted displayed line width.
+		03/11/25 RSB	Added SHOW_WORD_NUMBERS.
+		05/03/25 RSB	Added FMT_2DECL.
 
   For more insight, I'd highly recommend looking at the documents
   http://hrst.mit.edu/hrs/apollo/public/archive/1689.pdf and
@@ -187,6 +192,8 @@ extern long random (void);
 
 //----------------------------------------------------------------------------
 // Constants.
+
+#define DEFAULT_URL "https://www.ibiblio.org/apollo/yaTelemetry.html#yaTelemetry"
 
 // Max number of symbols in a yaAGC sym-dump.
 #define MAX_SYM_DUMP 25
@@ -284,13 +291,22 @@ extern long random (void);
 
 #define NUM_INTERRUPT_TYPES 10
 
-// Max number of 15-bit words in a downlink-telemetry list.
-#define MAX_DOWNLINK_LIST 260
+// Max number of 15-bit words in a downlink-telemetry list.  I'm pretty sure
+// that 200 is the actual max, but I've beefed it up somewhat to allow
+// insertion of "spacer" elements for display purposes.
+#define MAX_DOWNLINK_LIST 400
 
 // Screen buffer for telemetry downlinks.  The terminal must be at least
 // one bigger in each dimension than the actual amount of text used.
-#define DEFAULT_SWIDTH 79
-#define DEFAULT_SHEIGHT 42
+//#define DISPLAYED_FIELD_WIDTH 20
+//#define SHOW_WORD_NUMBERS
+#ifdef SHOW_WORD_NUMBERS
+#define DISPLAYED_FIELD_WIDTH 30
+#else
+#define DISPLAYED_FIELD_WIDTH 24
+#endif
+#define DEFAULT_SWIDTH (4*DISPLAYED_FIELD_WIDTH)
+#define DEFAULT_SHEIGHT 52
 #define SWIDTH 160
 #define SHEIGHT 100
 
@@ -313,30 +329,38 @@ extern long random (void);
 // Stuff for specifying how to print various fields.
 
 typedef enum {
-  FMT_SP, FMT_DP, FMT_OCT, FMT_2OCT, FMT_DEC, FMT_2DEC, FMT_USP
+  FMT_SP, FMT_DP, FMT_OCT, FMT_2OCT, FMT_DEC, FMT_2DEC, FMT_USP, FMT_2DECL
 } Format_t;
 
 // Function used for writing out telemetry data.
 typedef void Swrite_t (void);
 typedef char *Sformat_t (int IndexIntoList, int Scale, Format_t Format);
 
+typedef char FieldSpecName_t[65];
+
 typedef struct {
   int IndexIntoList;	// if -1, then is a spacer.
-  char Name[65];
+  FieldSpecName_t Name;
   int Scale;
   Format_t Format;
   Sformat_t *Formatter;
+  char Unit[32];
   int Row;		// If 0,0, then just "next" position.
   int Col;
 } FieldSpec_t;
 
 typedef struct {
+  int id;
   char Title[SWIDTH + 1];
+  char URL[SWIDTH + 1];
   FieldSpec_t FieldSpecs[MAX_DOWNLINK_LIST];
+  int numFieldSpecs;
 } DownlinkListSpec_t;
 
+extern char *DocumentationURL;
+
 // A type of function for processing downlink lists.
-typedef void ProcessDownlinkList_t (const DownlinkListSpec_t *Spec);
+typedef void ProcessDownlinkList_t (DownlinkListSpec_t *Spec);
 
 //--------------------------------------------------------------------------
 // Each instance of the AGC CPU simulation has a data structure of type agc_t
@@ -424,11 +448,13 @@ typedef struct
 #ifdef AGC_ENGINE_C
 int DebugDsky = 0;
 int InhibitAlarms = 0;
+int ShowAlarms = 0;
 int NumDebugRules = 0;
 DebugRule_t DebugRules[MAX_DEBUG_RULES];
 #else
 extern int DebugDsky;
 extern int InhibitAlarms;
+extern int ShowAlarms;
 extern int NumDebugRules;
 extern DebugRule_t DebugRules[MAX_DEBUG_RULES];
 extern int initializeSunburst37;
@@ -501,6 +527,7 @@ int DownlinkListBuffer[MAX_DOWNLINK_LIST];
 int DownlinkListCount = 0, DownlinkListExpected = 0, DownlinkListZero = -1;
 ProcessDownlinkList_t *ProcessDownlinkList = NULL;
 int CmOrLm = 0;	// Default is 0 (LM); other choice is 1 (CM)
+int Sundance = 0;
 char Sbuffer[SHEIGHT][SWIDTH + 1];
 int Sheight = DEFAULT_SHEIGHT, Swidth = DEFAULT_SWIDTH;
 int LastRhcPitch = 0, LastRhcYaw = 0, LastRhcRoll = 0;
@@ -524,6 +551,7 @@ extern int DownlinkListBuffer[MAX_DOWNLINK_LIST];
 extern int DownlinkListCount, DownlinkListExpected, DownlinkListZero;
 extern ProcessDownlinkList_t *ProcessDownlinkList;
 extern int CmOrLm;
+extern int Sundance;
 extern char Sbuffer[SHEIGHT][SWIDTH + 1];
 extern int Sheight, Swidth;
 extern int LastRhcPitch, LastRhcYaw, LastRhcRoll;
@@ -564,6 +592,7 @@ int AddSP16 (int Addend1, int Addend2);
 void UnprogrammedIncrement (agc_t *State, int Counter, int IncType);
 
 void DecodeDigitalDownlink (int Channel, int Value, int CmOrLm);
+int dddConfigure(char *agcSoftware, const char *docPrefix);
 ProcessDownlinkList_t PrintDownlinkList;
 void PrintDP (int *Ptr, int Scale, int row, int col);
 void PrintSP (int *Ptr, int Scale, int row, int col);

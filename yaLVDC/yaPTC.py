@@ -62,6 +62,7 @@
 # computer. 
 
 from ProcessorDisplayPanel import *
+#import tkinter.font as tkFont
 
 ioTypes = ["PIO", "CIO", "PRS", "INT" ]
 prsModeBCD = True
@@ -155,6 +156,9 @@ cli.add_argument("--tstop", \
 cli.add_argument("--terminal", \
 				 help="Just print all incoming virtual-wire data from CPU.", \
 				 type=int)
+cli.add_argument("--noconnect", \
+				help="Don't try to connect to the LVDC (for GUI debugging).", \
+				type=int)
 args = cli.parse_args()
 
 # Characteristics of the host and port being used for yaLVDC communications.  
@@ -209,7 +213,7 @@ class printer:
 	def __init__(self, root):
 		self.root = root
 		self.root.title("PTC PRINTER")
-		self.root.geometry("1200x480")
+		self.root.geometry("%dx%d+%d+%d" % (agcScale*1200, agcScale*480, agcScale*150, agcScale*150))
 		self.text = ScrolledText(self.root)
 		self.text.place(relx=0.0, rely=0.0, relheight=1.0, relwidth=1.0, \
 					    bordermode='ignore')
@@ -226,7 +230,7 @@ class typewriter:
 	def __init__(self, root):
 		self.root = root
 		self.root.title("PTC TYPEWRITER")
-		self.root.geometry("1200x480")
+		self.root.geometry("%dx%d+%d+%d" % (agcScale*1200, agcScale*480, agcScale*100, agcScale*100))
 		self.text = ScrolledText(self.root)
 		self.text.place(relx=0.0, rely=0.0, relheight=1.0, relwidth=1.0, \
 					    bordermode='ignore')
@@ -244,8 +248,9 @@ class plotter:
 	def __init__(self, root):
 		self.root = root
 		self.root.title("PTC PLOTTER")
-		self.root.geometry("%dx%d" % (1024 + 2 * plotMargin, \
-									  1024 + 2 * plotMargin))
+		self.root.geometry("%dx%d+3%d+%d" % (agcScale*(1024 + 2 * plotMargin), \
+									  agcScale*(1024 + 2 * plotMargin), \
+									  agcScale*50, agcScale*50))
 		self.canvas = ScrolledWindow(self.root)
 		self.canvas.place(relx=0.0, rely=0.0, relheight=1.0,
 			relwidth=1.0, bordermode='ignore')
@@ -258,6 +263,7 @@ class plotter:
 	                            background=self.color)
 		self.canvas.create_window(0, 0, anchor='nw',
 	                                           window=self.canvas_f)
+		#self._canvas.pack(side=LEFT, fill=BOTH, expand=True)
 
 ##############################################################################
 # Hardware abstraction / User-defined functions.  Also, any other 
@@ -1622,7 +1628,8 @@ def connectToLVDC():
 				sys.exit(1)
 			time.sleep(1)
 
-connectToLVDC()
+if not args.noconnect:
+	connectToLVDC()
 
 ###############################################################################
 # Event loop.  Just check periodically for output from yaLVDC (in which case 
@@ -1663,8 +1670,17 @@ leftToRead = packetSize
 view = memoryview(inputBuffer)
 
 didSomething = False
+firstIteration = True
 def mainLoopIteration():
 	global didSomething, inputBuffer, leftToRead, view, terminalHeaderPrinted
+	global firstIteration
+
+	if firstIteration:
+		#top.paneCEPanel.sash_place(0, 0, round(agcScale*35))
+		#top.paneCEPanel_p2.paneconfig(height=agcScale*155)
+		#print(top.paneCEPanel.config())
+		pass
+	firstIteration = False
 
 	# Check for packet data received from yaLVDC and process it.
 	# While these packets are always the same length in bytes,
@@ -1748,6 +1764,18 @@ while False:
 	mainLoopIteration()
 
 root = tk.Tk()
+#default_font = tkFont.nametofont("TkDefaultFont")
+#default_font.configure(size=12)
+default_scaling = root.tk.call('tk', 'scaling')
+print("Default scaling =", default_scaling)
+root.tk.call('tk', 'scaling', agcScale * default_scaling)
+root.tk_setPalette(background=bgcolor, foreground=fgcolor)
+root.geometry("%dx%d+0+0" % (winWidth, winHeight))
+root.minsize(1, 1)
+#top.maxsize(5105, 1170)
+root.resizable(1, 1)
+root.title("PROGRAMMABLE TEST CONTROLLER")
+root.configure(highlightcolor="black")
 
 ProcessorDisplayPanel_support.set_Tk_var()
 top = topProcessorDisplayPanel (root)

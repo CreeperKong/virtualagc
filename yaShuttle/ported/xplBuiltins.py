@@ -11,6 +11,8 @@ History:    2023-09-07 RSB  Split the former g.py into two files, this one
                             (xplBuiltins.py) containing just functions, and g.py
                             (which continues to contain all of the variables
                             and constants).
+            2024-08-15 RSB  Eliminated standard `ebcdic` module in favor of
+                            my own `asciiToEbcdic`, for portability reasons.
 '''
 
 import sys
@@ -21,13 +23,30 @@ from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
 import json
 import math
-import ebcdic
+#import ebcdic
+from asciiToEbcdic import asciiToEbcdic, ebcdicToAscii
+#from virtualenv.create.via_global_ref.builtin import via_global_self_do
+
+# McKeeman p. 137 specifies that in mulit-assignments like
+#    X1, X2, ..., XN = Y;
+# the assignments are in right-to-left order; i.e., 
+#    XN = Y;
+#    ...
+#    X1 = Y;
+# However, I've had problems with infinite loops in HAL/S-FC PASS1 doing it
+# that way, so I prefer the left-to-right order.  The following variable
+# determines that order, but only for a couple of known problematic cases
+# of the form
+#    X(I),I = J;
+leftToRightAssignments = True
 
 # This is the root directory for imports.
 scriptFolder = os.path.dirname(__file__)  # Requires / at the end.
 scriptParentFolder = str(pathlib.Path(scriptFolder).parent.absolute())
 
 outUTF8 = ("--utf8" in sys.argv[1:])
+bfs = ("--bfs" in sys.argv[1:])
+pfs = not bfs
 
 
 # Python's native round() function uses a silly method (in the sense that it is
@@ -183,7 +202,10 @@ def openGenericInputDevice(name, isPDS=False, rw=False):
     try:
         f = open(name, mode)
     except:
-        f = open(scriptParentFolder + "/" + name, mode)
+        try:
+            f = open(scriptParentFolder + "/" + name, mode)
+        except:
+            f = open(name, "w+")
     inputDevice = {
         "file": f,
         "open": True,
@@ -191,7 +213,10 @@ def openGenericInputDevice(name, isPDS=False, rw=False):
         "buf": []
         }
     if isPDS:
-        inputDevice["pds"] = json.load(f)
+        try:
+            inputDevice["pds"] = json.load(f)
+        except:
+            inputDevice["pds"] = {}
         inputDevice["mem"] = ""
     return inputDevice
 
@@ -253,7 +278,7 @@ redirections = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]  # For MONITOR(8).
 
 def MONITOR(function, arg2=None, arg3=None):
     global inputDevices, outputDevices, dwArea, compilationReturnBits, \
-            namePassedToCompiler, files, redirections
+            namePassedToCompiler, files, redirections, FR
     
     def error(msg=''):
         if len(msg) > 0:
@@ -429,6 +454,7 @@ def MONITOR(function, arg2=None, arg3=None):
             else:
                 return 1
             # Convert the result back to IBM floats, and store in working area.
+            FR[0] = value0
             dwArea[0], dwArea[1] = toFloatIBM(value0)
             return 0
         except:
@@ -441,7 +467,9 @@ def MONITOR(function, arg2=None, arg3=None):
             exit(1)
         s = arg2
         try:
-            dwArea[0], dwArea[1] = toFloatIBM(float(s))
+            from g import FR
+            FR[0] = float(s)
+            dwArea[0], dwArea[1] = toFloatIBM(FR[0])
             return 0
         except:
             return 1
@@ -501,7 +529,7 @@ def MONITOR(function, arg2=None, arg3=None):
         # halfword is treated as a short integer.  However,
         # I still don't understand where the data is supposed to 
         # come from.
-        return 0xF0F10000
+        return 0xF0F00000
     
     # Incorporate flags into return code.
     elif function == 16:
@@ -543,7 +571,10 @@ def MONITOR(function, arg2=None, arg3=None):
     
     # Return program identification.
     elif function == 23:
-        return "REL32V0   "
+        if pfs:
+            return "REL32V0   "
+        elif bfs:
+            return "BFC-17.0  "
     
     # Read a block of a load module.
     elif function == 24:
@@ -612,12 +643,19 @@ the so-called ANSI control characters:
 headingLine = ''
 subHeadingLine = ''
 pageCount = 0
-LINE_COUNT = 0
+# The reason I've turned LINE_COUNT into a class, is that I only realized 
+# belatedly that if xplBuiltins is imported as a module, the importers never
+# see any updates to the LINE_COUNT.  This was the cheapest way I could fix it
+# after the fact.
+class lineCount:
+    def __init__(self):
+        self.LINE_COUNT = 0
+lc = lineCount() 
 linesPerPage = 59  # Should get this from LINECT parameter.
 
 
 def OUTPUT(fileNumber, string):
-    global headingLine, subHeadingLine, pageCount, LINE_COUNT
+    global headingLine, subHeadingLine, pageCount
     if fileNumber > 1:
         file = outputDevices[fileNumber]
         if file == None:
@@ -654,11 +692,13 @@ def OUTPUT(fileNumber, string):
         elif ansi == '+':
             # This would overstrike the line.  I.e., it's like a carriage return
             # without a line feed.  But I have no actual way to do that, so we 
-            # need to advance to the next line.
+            # need to advance to the next line.  What's typically in these 
+            # overstrikes is underscores, which don't actually work very well,
+            # so I replace those with carats.
             queue.append('')
-            pass
+            string = string.replace("_", "^")
         elif ansi == '1':
-            LINE_COUNT = linesPerPage
+            lc.LINE_COUNT = linesPerPage
         elif ansi == 'H':
             headingLine = string[1:]
             return
@@ -670,26 +710,30 @@ def OUTPUT(fileNumber, string):
         else:
             queue.append(string[1:])
         for i in range(len(queue)):
-            if LINE_COUNT == 0 or LINE_COUNT >= linesPerPage:
+            if lc.LINE_COUNT == 0 or lc.LINE_COUNT >= linesPerPage:
                 if pageCount > 0:
                     print('\n\f', end='')
+                    print('----------------------------------------' \
+                          '----------------------------------------' \
+                          '----------------------------------------' \
+                          '------------------------------')
                 pageCount += 1
-                LINE_COUNT = 0
+                lc.LINE_COUNT = 0
                 if len(headingLine) > 0:
                     print(headingLine + ("     PAGE %d" % pageCount))
-                    LINE_COUNT += 1
                 else:
                     print("PAGE %d" % pageCount)
+                lc.LINE_COUNT += 1
                 if len(subHeadingLine) > 0:
                     print(subHeadingLine)
-                    LINE_COUNT += 1
-                if LINE_COUNT > 0:
+                    lc.LINE_COUNT += 1
+                if lc.LINE_COUNT > 0:
                     print()
-                    LINE_COUNT += 1
+                    lc.LINE_COUNT += 1
+            print(queue[i], end='')
             if i < len(queue) - 1:
-                print(queue[i])
-            else:
-                print(queue[i], end='')
+                print()
+                lc.LINE_COUNT += 1
 
 '''
     fileNumber 0,1  stdin, presumably the source code.
@@ -740,9 +784,9 @@ def INPUT(fileNumber):
             data = file['pds'][mem]
         if index < len(data):
             file['ptr'] = index
-            line = data[index]
-            if len(line) == 0:
-                line = ' '
+            line = "%-80s" % data[index]
+            #if len(line) == 0:
+            #    line = ' '
             return line[:]
         else:
             return ''
@@ -936,12 +980,13 @@ def BYTE(s, index=0, value=None):
             c = s[index]
             if c == '`':  # Replacement for cent sign
                 return 0x4A
-            elif c == '~':  # Replacement for logical-not sign
+            elif c in ['~', '^']:  # Replacement for logical-not sign
                 return 0x5F
             elif c == '\x04':  # Replacement for EOF.
                 return 0xFE
             else:  # Everything else.
-                return c.encode('cp1140')[0]  # Get EBCDIC byte code.
+                #return c.encode('cp1140')[0]  # Get EBCDIC byte code.
+                return asciiToEbcdic[ord(c)]
         except:
             return 0
     if value == 0x4A:  # Replacement for cent sign.
@@ -951,20 +996,30 @@ def BYTE(s, index=0, value=None):
     elif value == 0xFE:  # Replacement for EOF.
         c = '\x04'
     else:  # Everything else.
-        c = bytearray([value]).decode('cp1140')
+        #c = bytearray([value]).decode('cp1140')
+        c = ebcdicToAscii[value]
     return s[:index] + c + s[index + 1:]
 
-    dummy[i] = dummy[i].rstrip('\n\r').replace("¬", "~")\
-                        .replace("^", "~").replace("¢", "`").expandtabs(8)\
-                        .ljust(80)
 
-
-# STRING_GT() is completely undocumented, as far as I know.  I'm going to 
-# assume it's a string-comparison operation.  As to whether the particular
-# collation sequence is significant or not ...
+# STRING_GT() is described on p. 13-4 of IR-182-1.
 def STRING_GT(s1, s2):
-    return s1.encode('cp1140') > s2.encode('cp1140')
-
+    length1 = len(s1)
+    length2 = len(s2)
+    length = max(length1, length2)
+    for i in range(length):
+        if i < length1:
+            c1 = asciiToEbcdic[ord(s1[i])]
+        else:
+            c1 = 0x40
+        if i < length2:
+            c2 = asciiToEbcdic[ord(s2[i])]
+        else:
+            c2 = 0x40
+        if c1 > c2:
+            return True
+        elif c1 < c2:
+            return False
+    return False
 
 # The following is supposed to give the address in memory of the variable that's
 # it's parameter.  Of course, that's specific to the IBM implementation, and

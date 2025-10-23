@@ -16,7 +16,7 @@ APP = modernHAL-S-FC
 CC2 = x86_64-w64-mingw32-gcc
 STRIP2 = x86_64-w64-mingw32-strip
 ifeq "" "$(shell which $(CC2))"
-  APP2 = ""
+  APP2 = 
 else
   APP2 = ${APP}.exe
 endif
@@ -47,10 +47,11 @@ clean :
 
 distclean : clean
 	-rm DemoHAL_S
-	-make -C temp distclean
+	-rm temp -rf
 
+# BNFC 2.9.x (through x=5) don't work.  2.8.3 does work.
 DemoHAL_S ${CFILES} ${HFILES} : HAL_S.cf fixPrinter.c
-	if [ ! -d temp] ; then mkdir temp ; fi
+	if [ ! -d temp ] ; then mkdir temp ; fi
 	cd temp && bnfc --c -l -m ../HAL_S.cf
 	make -C temp CCFLAGS="${CCFLAGS}" BISON_OPTS="${BISON_OPTS}"
 	mv temp/TestHAL_S DemoHAL_S
@@ -72,8 +73,8 @@ DemoHAL_S ${CFILES} ${HFILES} : HAL_S.cf fixPrinter.c
 		-e 's@The Language HAL/S@Preprocessed HAL/S@' \
 		-e 's@\\documentclass\[a4paper,11pt\][{]article[}]@\\documentclass[10pt]{article}\n\\usepackage[letterpaper, margin=1in]{geometry}@' \
 		 HAL_S.tex
-	pdflatex HAL_S.tex
-	mv HAL_S.pdf "HAL-S BNF.pdf"
+	-pdflatex HAL_S.tex
+	-mv HAL_S.pdf "HAL-S BNF.pdf"
 
 ${APP} : modernHAL-S-FC.c ${CFILES} ${HFILES}
 	${CC} ${CCFLAGS} -o $@ modernHAL-S-FC.c ${CFILES}

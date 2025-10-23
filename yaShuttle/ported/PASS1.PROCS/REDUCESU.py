@@ -65,8 +65,12 @@ def REDUCE_SUBSCRIPT(MODE, SIZE, FLAG = g.FALSE):
     
     def STEPPER():
         g.NEXT_SUB = g.NEXT_SUB + 1;
-        g.PSEUDO_LENGTH[g.IND_LINK] = g.NEXT_SUB
-        g.IND_LINK = g.NEXT_SUB;
+        if leftToRightAssignments:
+            g.PSEUDO_LENGTH[g.IND_LINK] = g.NEXT_SUB
+            g.IND_LINK = g.NEXT_SUB;
+        else:
+            g.IND_LINK = g.NEXT_SUB;
+            g.PSEUDO_LENGTH[g.IND_LINK] = g.NEXT_SUB
         if g.INX[g.NEXT_SUB] != 1:
              if MODE == 0x8: 
                  g.VAL_P[g.PTR[g.MP]] = g.VAL_P[g.PTR[g.MP]] | 0x2000;
@@ -94,7 +98,7 @@ def REDUCE_SUBSCRIPT(MODE, SIZE, FLAG = g.FALSE):
                 g.VAL_P[g.NEXT_SUB] = 1;
                 STEPPER();
                 T2 = CHECK_SUBSCRIPT(MODE, SIZE, 0);
-            if (not FLAG and goto == None) or goto != None:
+            if (not 0 != (1 & FLAG) and goto == None) or goto != None:
                 if ((T1 < 0 or T2 < 0) and goto == None) or goto == "SR_ERR1":
                     if goto == "SR_ERR1": goto = None
                     ERROR(CLASS_SR, 1, g.VAR[g.MP]);
@@ -110,7 +114,7 @@ def REDUCE_SUBSCRIPT(MODE, SIZE, FLAG = g.FALSE):
                     g.INX[g.IND_LINK] = MODE | 0x1;
                 elif (T2 < T1 and goto == None) or goto == "SR_ERR2":
                     if goto == "SR_ERR2": goto = None
-                    ERROR(CLASS_SR, 2, g.VAR[g.MP]);
+                    ERROR(d.CLASS_SR, 2, g.VAR[g.MP]);
                     g.FIX_DIM = 2;
                 else: 
                     g.FIX_DIM = T2 - T1 + 1;

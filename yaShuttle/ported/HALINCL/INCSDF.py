@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 """
    Access:     Public Domain, no restrictions believed to exist.
    Filename:   INCSDF.py
@@ -865,7 +865,7 @@ if RECORD_ALLOC(FORFCB) > 0:
 RECORD_FREE(FORFCB);
 if RECORD_ALLOC(PGING) > 0:
 RECORD_FREE(PGING);
-if g.SIMULATING:
+if 0 != (g.SIMULATING & 1):
 MAKE_INCL_CELL(SDF_NAME, INCL_FLAGS,
 SHL(REV,16) | CAT);
 return g.TRUE;

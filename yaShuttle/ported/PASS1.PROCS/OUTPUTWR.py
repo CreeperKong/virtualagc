@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 '''
 Access:     Public Domain, no restrictions believed to exist.
 Filename:   OUTPUTWR.xpl
@@ -674,7 +674,7 @@ def OUTPUT_WRITER(PTR_START=None, PTR_END=None):
                 # END
             # END
         if l.MAX_E_LEVEL + MAX(l.MAX_S_LEVEL, g.SDL_OPTION) + 2 + \
-                LINE_COUNT > g.LINE_MAX:
+                lc.LINE_COUNT > g.LINE_MAX:
             ll.C = g.PAGE;
         else:
             ll.C = g.NEXT_CC;
@@ -962,7 +962,7 @@ def OUTPUT_WRITER(PTR_START=None, PTR_END=None):
         g.I = 2;
         l.SDL_INFO = g.SRN[g.I];
         l.INCLUDE_COUNT = g.SRN_COUNT[g.I];
-        if not l.LINE_CONTINUED: 
+        if not 0 != (1 & l.LINE_CONTINUED): 
             l.M_PTR = MAX(MIN(g.INDENT_LEVEL, l.INDENT_LIMIT), 0);
         if g.INLINE_INDENT_RESET >= 0: 
         # DO;
@@ -971,7 +971,7 @@ def OUTPUT_WRITER(PTR_START=None, PTR_END=None):
         # END
         if l.PTR_END == -1:
             l.PTR_END = g.STMT_PTR;
-        if (l.PTR_END == g.OUTPUT_STACK_MAX) and g.SQUEEZING:
+        if (l.PTR_END == g.OUTPUT_STACK_MAX) and 0 != (1 & g.SQUEEZING):
             l.PTR_END = l.PTR_END - 2;
         while ((g.GRAMMAR_FLAGS(l.PTR_START) & g.PRINT_FLAG) == 0) and \
                 (l.PTR_START <= l.PTR_END):
@@ -1208,6 +1208,7 @@ def OUTPUT_WRITER(PTR_START=None, PTR_END=None):
                                                     l.SAVE_S_C[g.I] = g.C[g.I];
                                                     l.S_CHAR_PTR_MAX = \
                                                         l.S_CHAR_PTR_MAX + LENGTH(g.C[g.I]);
+                                                g.I = 2
                                                 l.S_PTR = l.S_PTR + l.SPACE_NEEDED;
                                         if goto in [None, "MORE_S_C"]:
                                             if goto == "MORE_S_C": goto = None
@@ -1381,6 +1382,7 @@ def OUTPUT_WRITER(PTR_START=None, PTR_END=None):
                                                     l.SAVE_E_C[g.I] = g.C[g.I];
                                                     l.E_CHAR_PTR_MAX = l.E_CHAR_PTR_MAX + LENGTH(g.C[g.I]);
                                                 # END
+                                                g.I = 2
                                                 l.E_PTR = l.E_PTR + l.SPACE_NEEDED;
                                         if goto in [None, "MORE_E_C"]:
                                             if goto == "MORE_E_C": goto = None
@@ -1499,6 +1501,7 @@ def OUTPUT_WRITER(PTR_START=None, PTR_END=None):
                         for g.I in range(0, 2 + 1):
                             l.M_CHAR_PTR_MAX = l.M_CHAR_PTR_MAX + LENGTH(g.C[g.I]);
                         # END
+                        g.I = 2
                         l.M_PTR = l.M_PTR + l.SPACE_NEEDED;
                     goto = "MORE_M_C"
                     while goto == "MORE_M_C":

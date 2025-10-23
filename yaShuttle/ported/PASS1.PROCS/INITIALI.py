@@ -131,7 +131,7 @@ def INITIALIZATION():
     # need persistent locals.
 
     SUBHEAD = 'STMT                                   ' + \
-              '              SOURCE                                                  CURRENT S' + \
+              '               SOURCE                                                  CURRENT S' + \
               'COPE'
     
     EQUALS = ' = '
@@ -167,9 +167,9 @@ def INITIALIZATION():
     
     STORAGE_INCREMENT = 0
     STORAGE_MASK = 0
-    LOGHEAD =                                'STMT                                      ' + \
-        '                           SOURCE                                              ' + \
-        '                   REVISION'
+    LOGHEAD =                                 'STMT                                      ' + \
+        '                            SOURCE                                              ' + \
+        '                    REVISION'
     TMP = 0
     if g.pfs:
         NUM1_OPT = 19
@@ -195,7 +195,7 @@ def INITIALIZATION():
     
     g.C[0] = VALS[0]
     if LENGTH(g.C[0]) == 0:
-        g.C[0] = 'T H E  V I R T U A L  A G C  P R O J E C T'
+        g.C[0] = 'T I T A N  S Y S T E M S  C O R P .'
     g.J = LENGTH(g.C[0])
     g.J = ((61 - g.J) // 2) + g.J
     g.C[0] = LEFT_PAD(g.C[0], g.J)
@@ -211,7 +211,7 @@ def INITIALIZATION():
     PRINT_DATE_AND_TIME ('TODAY IS ', DATE(), TIME())
     OUTPUT(0, g.X1)
     
-    g.C[0] = g.PARM_FIELD
+    g.C[0] = g.PARM_STRING # g.PARM_FIELD
     g.I = 0
     g.S = ' PARM FIELD: '
     g.K = LENGTH(g.C[0])
@@ -284,7 +284,7 @@ def INITIALIZATION():
             if TYPE2_TYPE[SORT2[g.I]] & 1:
                 g.S = VALS[SORT2[g.I]];  # DECIMAL VALUE
             else:
-                g.S = STRING(VALS[SORT2[g.I]]);  # DESCRIPTER
+                g.S = STRING(VALS[SORT2[g.I]], VALS);  # DESCRIPTER
             if SORT2[g.I] != 12: 
                 OUTPUT(0, g.C[0] + EQUALS + g.S);
     g.LISTING2 = (g.OPTIONS_CODE() & 0x02) != 0;
@@ -390,6 +390,7 @@ def INITIALIZATION():
     RECORD_USED(h.LIT_PG, RECORD_ALLOC(h.LIT_PG));
     # I think the following lines probably store the addresses of LIT_NDX[]
     # and FOR_DW[] in the variables LIT_CHAR_AD and DW_AD. 
+    g.traceInline("INITIALIZATION p121")
     #CALL INLINE("58",1,0,LIT_NDX);
     #CALL INLINE("50",1,0,LIT_CHAR_AD);           /* ST  1,LIT_CHAR_AD */
     #CALL INLINE("58",1,0,FOR_DW);

@@ -165,6 +165,41 @@
  *              2024-01-25 RSB  Enabled Skylab 2-4 and ASTP missions because
  *                              core dump (but not yet reconstructed source
  *                              code) is now available.
+ *              2024-05-13 RSB  Enabled Comanche 67 for Apollo 12 CM.
+ *              2024-05-21 RSB  Added/Enabled Comanche 72 and Manche 72R3 for
+ *                              Apollo 13 CM.
+ *              2024-12-13 RSB  Long-overdue fix for the improperly-cropped
+ *                              heading in the "Simulation Status" window.
+ *                              Added ApoDisKey (Mac) as alternative to yaDSKY2.
+ *                              Speculatively added calls in a lot of widgets to
+ *                              SetForegroundColour`, due to reported problems
+ *                              in MacOS Sequoia that I'm not in a position to
+ *                              try reproducing.
+ *              2024-12-16 RSB  Removed "stay on top" behavior of simulation-
+ *                              status window".
+ *              2024-12-19 RSB  For the sake of ApoDisKey, I've had to move
+ *                              yaAGC startup to *before* DSKY startup.  I
+ *                              hope this doesn't break stuff.  Now includes
+ *                              automatic tiling of the simulation.  Choice
+ *                              of the ApoDisKey version (if several versions
+ *                              are installed) is now in VirtualAGC itself
+ *                              rather than in the simulation script.
+ *              2025-01-08 RSB  Adjustment to simulation-status window sizing.
+ *              2025-01-11 RSB  Added a Tic-tac-toe "mission".
+ *              2025-01-13 RSB  Added the AGC_WISH environment variable.
+ *              2025-03-03 RSB	Added --software switch for yaTelemetry.
+ *              2025-04-14 RSB	Enabled command-line debugging for Block I.
+ *              2025-04-20 RSB	Began allowing telemetry for some additional
+ *              		AGC software versions.  (But just Block II/LGC
+ *              		so far.)  Also, allowed other peripherals on
+ *              		several LGC versions that weren't previously
+ *              		enabled.
+ *              2025-04-21 RSB	Missions now automatically enabled/disabled
+ *              		on the basis of the existence of their core
+ *              		ropes.
+ *              2025-04-29 RSB	Apparently, running Borealis has been running
+ *              		Aurora12 instead.  Fixed that.
+ *              2025-04-30 RSB	Changed method of detecting file existence.
  *
  * This file was originally generated using the wxGlade RAD program.
  * However, it is now maintained entirely manually, and cannot be managed
@@ -181,15 +216,70 @@
 #include "wx/filefn.h"
 #include "wx/utils.h"
 
+// Note: Do *not* use persistence for the main window.  It interacts badly with
+// resizable windows, at least on my Linux Mint 21.3 system; the window
+// in size every time it's invoked.  But it can be used for the Simulation-
+// Status window.
+//#include <wx/persist/toplevel.h>
+
 #include "VirtualAGC.h"
 #include "../yaAGC/yaAGC.h"
 #include "../yaAGC/agc_engine.h"
+#ifdef __APPLE__
+#include <time.h>
+#include <sys/stat.h>
+#endif
+char whereApoDisKey[256] = "";
 
 int noSquish = 0;
 int dropdownSquish = 1;
 int maximumSquish = 0;
 int maximizeAtStartup = 0;
 long fontFloor = 8;
+bool ApoDisKeyInstalled = false;
+int showSimulate, xSimulate, ySimulate, wSimulate, hSimulate;
+int showDSKY, xDSKY, yDSKY, wDSKY, hDSKY;
+int showDEDA, xDEDA, yDEDA, wDEDA, hDEDA;
+int showTelemetry, xTelemetry, yTelemetry, wTelemetry, hTelemetry;
+
+// The user interface was designed, many years ago, for displays that were
+// nominally DPI=75.  While I envisaged displays becoming physically much
+// larger and DPI different in the future, I didn't envision *dramatic* increases
+// to the DPI while often becoming physically smaller.  wxWidgets tries to
+// compensate for this, but fails on some platforms, resulting in unreadably
+// small interfaces or badly-layed-out ones.  wxWidgets in principal also has a
+// separate framework that can be explicitly used to deal with this problem by
+// means of a concept called the "device independent pixel" (DIP).  However, the
+// mechanism does not work, in my experience, because it fails to properly
+// detect the DPI it needs for the scaling between the physical pixels and the
+// DIPs.  What we do instead is to allow the user to specify (via an environment
+// variable called AGC_SCALE) an optional scale factor for the user's display
+// versus the nominal designed-in display.
+double scaleDPI = 1.0;
+#define SCALED(x) ((x) * scaleDPI)
+wxString AGC_WISH = wxT("");
+
+// This is a function that stands in place of the function
+// wxBitmap(filename, imagetype) to load an a jpg but to scale it according
+// to scaleDPI.
+wxBitmap
+scaledBitmap(const wxString &name, wxBitmapType type) {
+  if (scaleDPI == 1.0)
+    return wxBitmap(name, type);
+  wxImage *image = new wxImage(name, type);
+  image->Rescale(SCALED(image->GetWidth()), SCALED(image->GetHeight()));
+  return wxBitmap(*image);
+}
+
+// Min width for the RHS of the main window.
+wxSize minWidthRHS;
+
+// Not used (yet?).
+void
+setWidgetColours(wxControl* w, int b=255, int f=0) {
+   w->SetBackgroundColour(wxColour(b, b, b));
+   w->SetForegroundColour(wxColour(f, f, f));
+}
 
 /*
  * The following array specifies most properties of "missions" (i.e., specific
@@ -200,37 +290,43 @@ long fontFloor = 8;
  * versions, although a handful of special behaviors may be hardcoded separately.
  * Also, for newly-added missions, don't forget to add a consistency event for it
  * in the event table appearing later in this file.
+ *
+ * If AUTO_MISSION_ENABLE is #define'd, then the .enable field will be
+ * overwritten during initialization, on the basis of whether or not the
+ * associated core-rope file exists.  However, I have absolutely failed in
+ * making that file-check work in Mac OS (Monterey), so AUTO_MISSION_ENABLE is
+ * in fact *not* #define'd.
  */
-static const missionAlloc_t missionConstants[ID_AGCCUSTOMBUTTON
+static missionAlloc_t missionConstants[ID_AGCCUSTOMBUTTON
     - ID_FIRSTMISSION] =
       {
           //
-            { "Apollo 1 Command Module", "",
+            { "Apollo 1 Command Module", "Sunspot247/MAIN.agc.html",
                 "Click this to select the unflown Apollo 1 mission.", DISABLED,
-                CM, BLOCK1, NO_PERIPHERALS, "", "CM0.ini" },
-            { "AS-202 (\"Apollo 3\") CM", "Corona261/MAIN.agc.html",
-                "Click this to select the AS-202 (\"Apollo 3\") unmanned CM mission. "
+                CM, BLOCK1, TELEMETRY_PERIPHERALS, "Sunspot247", "CM0.ini" },
+            { "AS-202 CM", "Corona261/MAIN.agc.html",
+                "Click this to select the AS-202 unmanned CM mission. "
                 "Note that this software is presently tentative.",
-                ENABLED, CM, BLOCK1, NO_PERIPHERALS, "Corona261", "CM0.ini" },
+		ENABLED, CM, BLOCK1, TELEMETRY_PERIPHERALS, "Corona261", "CM0.ini" },
             { "Apollo 4 Command Module", "Solarium055/MAIN.agc.html",
                 "Click this to select the unmanned Apollo 4 Block 1 CM mission, running software SOLARIUM 55, "
                     "which is believed to be identical to SOLARIUM 54.",
-                ENABLED, CM, BLOCK1, NO_PERIPHERALS, "Solarium055", "CM0.ini" },
+		    ENABLED, CM, BLOCK1, TELEMETRY_PERIPHERALS, "Solarium055", "CM0.ini" },
             { "Apollo 5 Lunar Module", "Sunburst120/MAIN.agc.html",
                 "Click this to select the unmanned Apollo 5 LM mission, running software SUNBURST 120.",
-                ENABLED, LM, BLOCK2, NO_PERIPHERALS, "Sunburst120", "LM0.ini" },
+		ENABLED, LM, BLOCK2, PERIPHERALS, "Sunburst120", "LM0.ini" },
             { "Apollo 6 Command Module", "Solarium055/MAIN.agc.html",
                 "Click this to select the unmanned Apollo 6 Block 1 CM mission, running software SOLARIUM 55.",
-                ENABLED, CM, BLOCK1, NO_PERIPHERALS, "Solarium055", "CM0.ini" },
+		ENABLED, CM, BLOCK1, TELEMETRY_PERIPHERALS, "Solarium055", "CM0.ini" },
             { "2TV-1 Command Module", "SundialE/MAIN.agc.html",
                 "Click this to select the 2TV-1 mission, running software Sundial E.",
-                ENABLED, CM, BLOCK2, PERIPHERALS, "SundialE", "CM.ini" },
-            { "Apollo 7 Command Module", "",
+		ENABLED, CM, BLOCK2, PERIPHERALS, "SundialE", "CM.ini" },
+            { "Apollo 7 Command Module", "Sundisk282/MAIN.agc.html",
                 "Click this to select the Apollo 7 mission.", DISABLED, CM,
-                BLOCK2, PERIPHERALS, "", "CM.ini" },
+                BLOCK2, PERIPHERALS, "Sundisk282", "CM.ini" },
             { "Apollo 8 Command Module", "Colossus237/MAIN.agc.html",
                 "Click this to select the Apollo 8 mission, running software COLOSSUS 237.",
-                ENABLED, CM, BLOCK2, PERIPHERALS, "Colossus237", "CM.ini" },
+		ENABLED, CM, BLOCK2, PERIPHERALS, "Colossus237", "CM.ini" },
             { "Apollo 9 Command Module", "Colossus249/MAIN.agc.html",
                 "Click this to select the CM for the Apollo 9 mission, running software COLOSSUS 249.",
                 ENABLED, CM, BLOCK2, PERIPHERALS, "Colossus249", "CM.ini" },
@@ -276,15 +372,18 @@ static const missionAlloc_t missionConstants[ID_AGCCUSTOMBUTTON
             //{ "LUMINARY 99 rev 2 (LM)", "LUM99R2/MAIN.agc.html",
             //    "Click this to select Luminary 99 rev 2, a hypothetical but unflown revision of the Apollo 11 LM software.",
             //    ENABLED, LM, BLOCK2, PERIPHERALS, "LUM99R2", "LM.ini" },
-            { "Apollo 12 Command Module", "",
+            { "Apollo 12 Command Module", "Comanche067/MAIN.agc.html",
                 "Click this to select the CM for the Apollo 12 mission.",
-                DISABLED, CM, BLOCK2, PERIPHERALS, "", "CM.ini" },
+                ENABLED, CM, BLOCK2, PERIPHERALS, "Comanche067", "CM.ini" },
             { "Apollo 12 Lunar Module", "Luminary116/MAIN.agc.html",
                 "Click this to select the LM for the Apollo 12 mission.",
                 ENABLED, LM, BLOCK2, PERIPHERALS, "Luminary116", "LM.ini" },
-            { "Apollo 13 Command Module", "",
+            { "COMANCHE 72 (CM)", "Comanche072/MAIN.agc.html",
+                    "Click this to select Comanche 72, a preliminary software release targeting the Apollo 13 CM.",
+                    ENABLED, CM, BLOCK2, PERIPHERALS, "Comanche072", "CM.ini" },
+            { "Apollo 13 Command Module", "Manche72R3/MAIN.agc.html",
                 "Click this to select the CM for the Apollo 13 mission.",
-                DISABLED, CM, BLOCK2, PERIPHERALS, "", "CM.ini" },
+                ENABLED, CM, BLOCK2, PERIPHERALS, "Manche72R3", "CM.ini" },
             { "LUMINARY 130 (LM)", "Luminary130/MAIN.agc.html",
                 "Click this to select Luminary 130, a preliminary revision of the Apollo 13 LM software.",
                 ENABLED, LM, BLOCK2, PERIPHERALS, "Luminary130", "LM.ini" },
@@ -294,9 +393,9 @@ static const missionAlloc_t missionConstants[ID_AGCCUSTOMBUTTON
             { "Apollo 13 Lunar Module", "LM131R1/MAIN.agc.html",
                 "Click this to select the LM for the Apollo 13 mission, running software LM131R1.",
                 ENABLED, LM, BLOCK2, PERIPHERALS, "LM131R1", "LM.ini" },
-            { "Apollo 14 Command Module", "",
+            { "Apollo 14 Command Module", "Comanche108/MAIN.agc.html",
                 "Click this to select the CM for the Apollo 14 mission.",
-                DISABLED, CM, BLOCK2, PERIPHERALS, "", "CM.ini" },
+                DISABLED, CM, BLOCK2, PERIPHERALS, "Comanche108", "CM.ini" },
             { "LUMINARY 163 (LM)", "Luminary163/MAIN.agc.html",
                 "Click this to select Luminary 163, the 1st software release targeting the Apollo 14 mission.",
                 ENABLED, LM, BLOCK2, PERIPHERALS, "Luminary163", "LM.ini" },
@@ -326,10 +425,10 @@ static const missionAlloc_t missionConstants[ID_AGCCUSTOMBUTTON
                 ENABLED, LM, BLOCK2, NO_PERIPHERALS, "Validation", "LM.ini" },
             { "SUNRISE 45", "Sunrise45/MAIN.agc.html",
                 "Click this to select the SUNRISE 45 Block I program.",
-                ENABLED, CM, BLOCK1, NO_PERIPHERALS, "Sunrise45", "CM0.ini" },
+                ENABLED, CM, BLOCK1, TELEMETRY_PERIPHERALS, "Sunrise45", "CM0.ini" },
             { "SUNRISE 69", "Sunrise69/MAIN.agc.html",
                 "Click this to select the SUNRISE 69 Block I program.",
-                ENABLED, CM, BLOCK1, NO_PERIPHERALS, "Sunrise69", "CM0.ini" },
+                ENABLED, CM, BLOCK1, TELEMETRY_PERIPHERALS, "Sunrise69", "CM0.ini" },
             { "RETREAD 44 (LM)", "Retread44/MAIN.agc.html",
                 "Click this to select the RETREAD 44 software.",
                 ENABLED, LM, BLOCK2, NO_PERIPHERALS, "Retread44", "LM0.ini" },
@@ -338,22 +437,25 @@ static const missionAlloc_t missionConstants[ID_AGCCUSTOMBUTTON
                 ENABLED, LM, BLOCK2, NO_PERIPHERALS, "Retread50", "LM0.ini" },
             { "AURORA 88 (LM)", "Aurora88/MAIN.agc.html",
                 "Click this to select the AURORA 88 software.  This was the standard checkout software for the LM guidance system.",
-                ENABLED, LM, BLOCK2, NO_PERIPHERALS, "Aurora88", "LM0.ini" },
+                ENABLED, LM, BLOCK2, PERIPHERALS, "Aurora88", "LM0.ini" },
             { "DAP AURORA 12 (LM)", "Aurora12/MAIN.agc.html",
                 "Click this to select the DAP AURORA 12 (early non-mission LM) software.  This is the last AGC version with full testing capabilities.",
-                ENABLED, LM, BLOCK2, NO_PERIPHERALS, "Aurora12", "LM0.ini" },
+                ENABLED, LM, BLOCK2, PERIPHERALS, "Aurora12", "LM0.ini" },
             { "BOREALIS (LM)", "Borealis/MAIN.agc.html",
                 "Click this to select the BOREALIS test-suite software.  BOREALIS is a modernized AGC self-test suite, based on AURORA.",
-                ENABLED, LM, BLOCK2, NO_PERIPHERALS, "Aurora12", "LM0.ini" },
+                ENABLED, LM, BLOCK2, PERIPHERALS, "Borealis", "LM0.ini" },
             { "SUNBURST 37 (LM)", "Sunburst37/MAIN.agc.html",
                 "Click this to select the SUNBURST 37 (early non-mission LM) software.",
-                ENABLED, LM, BLOCK2, NO_PERIPHERALS, "Sunburst37", "LM0.ini" },
+                ENABLED, LM, BLOCK2, PERIPHERALS, "Sunburst37", "LM0.ini" },
             { "ZERLINA 56 (LM)", "Zerlina56/MAIN.agc.html",
                 "Click this to select ZERLINA 56 (next-generation non-mission LM) software.",
                 ENABLED, LM, BLOCK2, PERIPHERALS, "Zerlina56", "LM.ini" },
             { "SUPER JOB", "SuperJob/MAIN.agc.html",
                 "Click this to select SUPER JOB (Raytheon Auxiliary Memory test) software.  Note that to run meaningfully, a simulated Auxiliary Memory unit (not yet available!) needs to be run also.",
-                ENABLED, CM, BLOCK2, NO_PERIPHERALS, "SuperJob", "CM.ini" } };
+                ENABLED, CM, BLOCK2, NO_PERIPHERALS, "SuperJob", "CM.ini" },
+            { "TIC-TAC-TOE", "TicTacToe/MAIN.agc.html",
+                "Click this to select the Tic-Tac-Toe game by Neil Fraser and Lena Ku",
+                ENABLED, CM, BLOCK2, NO_PERIPHERALS, "TicTacToe", "CM.ini" } };
 
 // This is the array where shell commands for the Digital Uplink
 // are stored.
@@ -385,7 +487,7 @@ static int NumShellouts = 0, OnShellout = 0;
   Object->SetBitmap (Bitmap)
 
 void
-VirtualAGC::SetSize(void)
+VirtualAGC::SetFontSizes(void)
 {
   wxFont Font;
   wxBitmap Bitmap;
@@ -441,9 +543,12 @@ VirtualAGC::SetSize(void)
   SET_FONT(DskyHalfButton, 0);
   SET_FONT(DskyLiteButton, 0);
   SET_FONT(DskyNavButton, 0);
+  SET_FONT(DskyNavHalfButton, 0);
+  SET_FONT(DskyApoButton, 0);
+  SET_FONT(DskyApoHalfButton, 0);
   SET_FONT(DownlinkLabel, 0);
-  SET_FONT(TelemetryResizable, 0);
-  SET_FONT(TelemetryRetro, 0);
+  //SET_FONT(TelemetryResizable, 0);
+  //SET_FONT(TelemetryRetro, 0);
   SET_FONT(AgcDebugLabel, 0);
   SET_FONT(AgcDebugNormalButton, 0);
   SET_FONT(AgcDebugMonitorButton, 0);
@@ -460,6 +565,13 @@ VirtualAGC::SetSize(void)
   SET_FONT(ExitButton, 0);
 }
 
+// I use this for keeping Mac OS from squishing checkboxes and radio buttons
+// together too close.
+#define LINE_SIZE 18
+wxSize LineSize;;
+
+// Regarding wxRESIZE_BORDER:  Undesirable in principle, but was added as a
+// workaround due to Issue #1174.
 VirtualAGC::VirtualAGC(wxWindow* parent, int id, const wxString& title,
     const wxPoint& pos, const wxSize& size, long style) :
     wxFrame(parent, id, title, pos, size,
@@ -468,7 +580,13 @@ VirtualAGC::VirtualAGC(wxWindow* parent, int id, const wxString& title,
             (wxCAPTION | wxMINIMIZE_BOX | wxCLOSE_BOX // | wxCLIP_CHILDREN
                 | wxSYSTEM_MENU | wxRESIZE_BORDER))
 {
+  wxString envString;
+  wxGetEnv(wxT("AGC_WISH"), &AGC_WISH);
+  if (wxGetEnv(wxT("AGC_SCALE"), &envString))
+    envString.ToDouble(&scaleDPI);
+  LineSize = wxSize(-1, SCALED(LINE_SIZE));
 
+  minWidthRHS = wxSize(SCALED(340), -1);
   // We auto-adjust fonts and image sizes if the screen size is too small.
   wxFont Font = GetFont();
   StartingPoints = Font.GetPointSize();
@@ -497,6 +615,22 @@ VirtualAGC::VirtualAGC(wxWindow* parent, int id, const wxString& title,
 
   PathDelimiter = wxT("");
   PathDelimiter += PATH_DELIMITER;
+
+#ifdef AUTO_MISSION_ENABLE
+  // Enable/disable missions on the basis of whether or not their rope images
+  // are available, overriding whatever settings are in the `missionConstants`
+  // array.
+  for (int mission = ID_FIRSTMISSION; mission < ID_AGCCUSTOMBUTTON; mission++)
+    {
+      wxString basename = wxString::FromUTF8(
+          missionConstants[mission - ID_FIRSTMISSION].basename);
+      const wxString filename = wxT("source/") + basename + wxT("/") + basename + wxT(".bin");
+      if (wxFile::Exists(filename))
+	missionConstants[mission - ID_FIRSTMISSION].enabled = ENABLED;
+      else
+	missionConstants[mission - ID_FIRSTMISSION].enabled = DISABLED;
+    }
+#endif
 
   // Find the directory that the executable is in.  Then go up one
   // level and then down into Resources sub-directory.  I envision
@@ -538,40 +672,44 @@ VirtualAGC::VirtualAGC(wxWindow* parent, int id, const wxString& title,
 
   sizer_1_copy_staticbox = new wxStaticBox(this, -1, wxT("Browse Source Code"));
   sizer_18_staticbox = new wxStaticBox(this, -1, wxT("AGC Startup"));
+  sizer_18_staticbox->SetMinSize(minWidthRHS);
   sizer_22_staticbox = new wxStaticBox(this, -1, wxT("Interface styles"));
+  sizer_22_staticbox->SetMinSize(minWidthRHS);
   sizer_38_staticbox = new wxStaticBox(this, -1, wxT("Use AGC/AEA debugger?"));
+  sizer_38_staticbox->SetMinSize(minWidthRHS);
   sizer_20_staticbox = new wxStaticBox(this, -1,
       wxT("LM Abort Computer (AEA) software"));
+  sizer_20_staticbox->SetMinSize(minWidthRHS);
   sizer_19_staticbox = new wxStaticBox(this, -1,
       wxT("Guidance Computer (AGC) software"));
   if (!maximumSquish)
     {
       Patch1Bitmap = new wxStaticBitmap(this, wxID_ANY,
-          wxBitmap(wxT("apo1.png"), wxBITMAP_TYPE_ANY));
+          scaledBitmap(wxT("apo1.png"), wxBITMAP_TYPE_ANY));
       Patch7Bitmap = new wxStaticBitmap(this, wxID_ANY,
-          wxBitmap(wxT("apo7.png"), wxBITMAP_TYPE_ANY));
+          scaledBitmap(wxT("apo7.png"), wxBITMAP_TYPE_ANY));
       Patch8Bitmap = new wxStaticBitmap(this, wxID_ANY,
-          wxBitmap(wxT("apo8.png"), wxBITMAP_TYPE_ANY));
+          scaledBitmap(wxT("apo8.png"), wxBITMAP_TYPE_ANY));
       Patch9Bitmap = new wxStaticBitmap(this, wxID_ANY,
-          wxBitmap(wxT("apo9.png"), wxBITMAP_TYPE_ANY));
+          scaledBitmap(wxT("apo9.png"), wxBITMAP_TYPE_ANY));
       Patch10Bitmap = new wxStaticBitmap(this, wxID_ANY,
-          wxBitmap(wxT("apo10.png"), wxBITMAP_TYPE_ANY));
+          scaledBitmap(wxT("apo10.png"), wxBITMAP_TYPE_ANY));
       Patch11Bitmap = new wxStaticBitmap(this, wxID_ANY,
-          wxBitmap(wxT("apo11.png"), wxBITMAP_TYPE_ANY));
+          scaledBitmap(wxT("apo11.png"), wxBITMAP_TYPE_ANY));
       PatchBitmap = new wxStaticBitmap(this, wxID_ANY,
-          wxBitmap(wxT("ApolloPatch2.png"), wxBITMAP_TYPE_ANY));
+          scaledBitmap(wxT("ApolloPatch2.png"), wxBITMAP_TYPE_ANY));
       Patch12Bitmap = new wxStaticBitmap(this, wxID_ANY,
-          wxBitmap(wxT("apo12.png"), wxBITMAP_TYPE_ANY));
+          scaledBitmap(wxT("apo12.png"), wxBITMAP_TYPE_ANY));
       Patch13Bitmap = new wxStaticBitmap(this, wxID_ANY,
-          wxBitmap(wxT("apo13.png"), wxBITMAP_TYPE_ANY));
+          scaledBitmap(wxT("apo13.png"), wxBITMAP_TYPE_ANY));
       Patch14Bitmap = new wxStaticBitmap(this, wxID_ANY,
-          wxBitmap(wxT("apo14.png"), wxBITMAP_TYPE_ANY));
+          scaledBitmap(wxT("apo14.png"), wxBITMAP_TYPE_ANY));
       Patch15Bitmap = new wxStaticBitmap(this, wxID_ANY,
-          wxBitmap(wxT("apo15.png"), wxBITMAP_TYPE_ANY));
+          scaledBitmap(wxT("apo15.png"), wxBITMAP_TYPE_ANY));
       Patch16Bitmap = new wxStaticBitmap(this, wxID_ANY,
-          wxBitmap(wxT("apo16.png"), wxBITMAP_TYPE_ANY));
+          scaledBitmap(wxT("apo16.png"), wxBITMAP_TYPE_ANY));
       Patch17Bitmap = new wxStaticBitmap(this, wxID_ANY,
-          wxBitmap(wxT("apo17.png"), wxBITMAP_TYPE_ANY));
+          scaledBitmap(wxT("apo17.png"), wxBITMAP_TYPE_ANY));
     }
   TopLine = new wxStaticLine(this, wxID_ANY);
   if (!maximumSquish)
@@ -609,31 +747,44 @@ VirtualAGC::VirtualAGC(wxWindow* parent, int id, const wxString& title,
         wxDefaultPosition, wxDefaultSize);
   DeviceAgcCheckbox = new wxCheckBox(this, ID_DEVICEAGCCHECKBOX,
       wxT("Guidance Computer"));
+  DeviceAgcCheckbox->SetMinSize(LineSize);
   DeviceDskyCheckbox = new wxCheckBox(this, ID_DEVICEDSKYCHECKBOX,
       wxT("DSKY (AGC display and keypad)"));
+  DeviceDskyCheckbox->SetMinSize(LineSize);
   DeviceAcaCheckbox = new wxCheckBox(this, ID_DEVICEACACHECKBOX,
       wxT("Attitude Controller Assembly"));
+  DeviceAcaCheckbox->SetMinSize(LineSize);
   JoystickConfigure = new wxButton(this, ID_JOYSTICKCONFIGURE, wxT("Handler"));
+  JoystickConfigure->SetClientSize(LineSize);
   DeviceTelemetryCheckbox = new wxCheckBox(this, ID_DEVICETELEMETRYCHECKBOX,
       wxT("Telemetry Downlink Monitor"));
+  DeviceTelemetryCheckbox->SetMinSize(LineSize);
   DeviceAeaCheckbox = new wxCheckBox(this, ID_DEVICEAEACHECKBOX,
       wxT("LM Abort Computer (AEA)"));
+  DeviceAeaCheckbox->SetMinSize(LineSize);
   DeviceDedaCheckbox = new wxCheckBox(this, ID_DEVICEDEDACHECKBOX,
       wxT("DEDA (AEA display and keypad)"));
+  DeviceDedaCheckbox->SetMinSize(LineSize);
   DeviceCpumonCheckbox = new wxCheckBox(this, ID_DEVICECPUMONCHECKBOX,
       wxT("AGC CPU Bus/Input/Output Monitor"));
+  DeviceCpumonCheckbox->SetMinSize(LineSize);
   static_line_4 = new wxStaticLine(this, wxID_ANY, wxDefaultPosition,
       wxDefaultSize, wxLI_VERTICAL);
   DeviceImuCheckbox = new wxCheckBox(this, ID_DEVICEIMUCHECKBOX,
       wxT("Inertial Monitor Unit / FDAI (8-ball)"));
+  DeviceImuCheckbox->SetMinSize(LineSize);
   DeviceDiscoutCheckbox = new wxCheckBox(this, ID_DEVICEDISCOUTCHECKBOX,
       wxT("Discrete Outputs"));
+  DeviceDiscoutCheckbox->SetMinSize(LineSize);
   DeviceCrewinCheckbox = new wxCheckBox(this, ID_DEVICECREWINCHECKBOX,
       wxT("Discrete Inputs (crew)"));
+  DeviceCrewinCheckbox->SetMinSize(LineSize);
   DeviceSysinCheckbox = new wxCheckBox(this, ID_DEVICESYSINCHECKBOX,
       wxT("Discrete Inputs (LM system)"));
+  DeviceSysinCheckbox->SetMinSize(LineSize);
   DevicePropulsionCheckbox = new wxCheckBox(this, ID_DEVICEPROPULSIONCHECKBOX,
       wxT("Propulsion/Thrust/Fuel Monitor"));
+  DevicePropulsionCheckbox->SetMinSize(LineSize);
   NoviceButton = new wxButton(this, ID_NOVICEBUTTON, wxT("Novice"));
   ExpertButton = new wxButton(this, ID_EXPERTBUTTON, wxT("Expert"));
   static_line_3 = new wxStaticLine(this, wxID_ANY, wxDefaultPosition,
@@ -649,50 +800,85 @@ VirtualAGC::VirtualAGC(wxWindow* parent, int id, const wxString& title,
   StartupWipeButton = new wxRadioButton(this, ID_STARTUPWIPEBUTTON,
       wxT("Restart program, wiping memory"), wxDefaultPosition, wxDefaultSize,
       wxRB_GROUP);
+  StartupWipeButton->SetMinSize(LineSize);
   StartupPreserveButton = new wxRadioButton(this, ID_STARTUPPRESERVEBUTTON,
       wxT("Restart program, preserving memory"));
+  StartupPreserveButton->SetMinSize(LineSize);
   StartupResumeButton = new wxRadioButton(this, ID_STARTUPRESUMEBUTTON,
       wxT("Resume from ending point of prior run"));
+  StartupResumeButton->SetMinSize(LineSize);
   CustomResumeButton = new wxRadioButton(this, ID_CUSTOMRESUMEBUTTON,
       wxT("Custom:"));
+  CustomResumeButton->SetMinSize(LineSize);
   CoreFilename = new wxTextCtrl(this, wxID_ANY, wxEmptyString);
   CoreBrowse = new wxButton(this, ID_COREBROWSE, wxT("..."));
   CoreSaveButton = new wxButton(this, ID_CORESAVEBUTTON, wxT("Save"));
   DskyLabel = new wxStaticText(this, wxID_ANY, wxT("DSKY:"));
-  DskyFullButton = new wxRadioButton(this, ID_DSKYFULLBUTTON, wxT("Full"),
+  DskyLabel->SetMinSize(LineSize);
+  DskyFullButton = new wxRadioButton(this, ID_DSKYFULLBUTTON, wxT("COM"),
       wxDefaultPosition, wxDefaultSize, wxRB_GROUP);
-  DskyHalfButton = new wxRadioButton(this, ID_DSKYHALFBUTTON, wxT("Half"));
+  DskyFullButton->SetMinSize(LineSize);
+  DskyHalfButton = new wxRadioButton(this, ID_DSKYHALFBUTTON, wxT("COM/2"));
+  DskyHalfButton->SetMinSize(LineSize);
   DskyLiteButton = new wxRadioButton(this, ID_DSKYLITEBUTTON, wxT("\"Lite\""));
-  DskyNavButton = new wxRadioButton(this, ID_DSKYNAVBUTTON, wxT("Nav"));
+  DskyLiteButton->SetMinSize(LineSize);
+  DskyNavButton = new wxRadioButton(this, ID_DSKYNAVBUTTON, wxT("NAV"));
+  DskyNavButton->SetMinSize(LineSize);
+  DskyNavHalfButton = new wxRadioButton(this, ID_DSKYNAVHALFBUTTON, wxT("NAV/2"));
+  DskyNavHalfButton->SetMinSize(LineSize);
+  DskyApoButton = new wxRadioButton(this, ID_DSKYAPOBUTTON, wxT("Mac"));
+  DskyApoButton->SetMinSize(LineSize);
+  DskyApoHalfButton = new wxRadioButton(this, ID_DSKYAPOHALFBUTTON, wxT("Mac/2"));
+  DskyApoHalfButton->SetMinSize(LineSize);
   DownlinkLabel = new wxStaticText(this, wxID_ANY, wxT("Downlink:"));
+  DownlinkLabel->SetMinSize(LineSize);
+  DownlinkLabel->Show(false);
   TelemetryResizable = new wxRadioButton(this, wxID_ANY, wxT("Normal"),
       wxDefaultPosition, wxDefaultSize, wxRB_GROUP);
+  TelemetryResizable->Show(false);
+  //TelemetryResizable->SetMinSize(LineSize);
   TelemetryRetro = new wxRadioButton(this, wxID_ANY, wxT("\"Retro\""));
+  TelemetryRetro->Show(false);
+  //TelemetryRetro->SetMinSize(LineSize);
   DedaLabel = new wxStaticText(this, wxID_ANY, wxT("DEDA:"));
+  DedaLabel->SetMinSize(LineSize);
   DedaFullButton = new wxRadioButton(this, ID_DEDAFULLBUTTON, wxT("Full"),
       wxDefaultPosition, wxDefaultSize, wxRB_GROUP);
+  DedaFullButton->SetMinSize(LineSize);
   DedaHalfButton = new wxRadioButton(this, ID_DEDAHALFBUTTON, wxT("Half"));
+  DedaHalfButton->SetMinSize(LineSize);
   AgcDebugLabel = new wxStaticText(this, wxID_ANY, wxT("AGC code:"));
+  AgcDebugLabel->SetMinSize(LineSize);
   AgcDebugNormalButton = new wxRadioButton(this, ID_AGCDEBUGNORMALBUTTON,
       wxT("Normal"), wxDefaultPosition, wxDefaultSize, wxRB_GROUP);
+  AgcDebugNormalButton->SetMinSize(LineSize);
   AgcDebugMonitorButton = new wxRadioButton(this, ID_AGCDEBUGMONITORBUTTON,
       wxT("Debugger"));
+  AgcDebugMonitorButton->SetMinSize(LineSize);
   AeaDebugLabel = new wxStaticText(this, wxID_ANY, wxT("AEA code:"));
+  AeaDebugLabel->SetMinSize(LineSize);
   AeaDebugNormalButton = new wxRadioButton(this, ID_AEADEBUGNORMALBUTTON,
       wxT("Normal"), wxDefaultPosition, wxDefaultSize, wxRB_GROUP);
+  AeaDebugNormalButton->SetMinSize(LineSize);
   AeaDebugMonitorButton = new wxRadioButton(this, ID_AEADEBUGMONITORBUTTON,
       wxT("Debugger"));
+  AeaDebugMonitorButton->SetMinSize(LineSize);
   FlightProgram4Button = new wxRadioButton(this, ID_FLIGHTPROGRAM4BUTTON,
       wxT("Apollo 9 (Flight Programs 3, 4)"), wxDefaultPosition, wxDefaultSize,
       wxRB_GROUP);
+  FlightProgram4Button->SetMinSize(LineSize);
   FlightProgram5Button = new wxRadioButton(this, ID_FLIGHTPROGRAM5BUTTON,
       wxT("Apollo 10 (Flight Program 5)"));
+  FlightProgram5Button->SetMinSize(LineSize);
   FlightProgram6Button = new wxRadioButton(this, ID_FLIGHTPROGRAM6BUTTON,
       wxT("Apollo 11-12 (Flight Program 6)"));
+  FlightProgram6Button->SetMinSize(LineSize);
   FlightProgram7Button = new wxRadioButton(this, ID_FLIGHTPROGRAM7BUTTON,
-      wxT("Apollo 13-14? (Flight Program 7)"));
+      wxT("Apollo 13-14 (Flight Program 7)"));
+  FlightProgram7Button->SetMinSize(LineSize);
   FlightProgram8Button = new wxRadioButton(this, ID_FLIGHTPROGRAM8BUTTON,
       wxT("Apollo 15-17 (Flight Program 8)"));
+  FlightProgram8Button->SetMinSize(LineSize);
   if (!maximumSquish)
     {
       AeaCustomButton = new wxRadioButton(this, ID_AEACUSTOMBUTTON,
@@ -713,7 +899,7 @@ VirtualAGC::VirtualAGC(wxWindow* parent, int id, const wxString& title,
   ReadConfigurationFile();
   EnforceConsistency();
 
-  SetSize();
+  SetFontSizes();
   Layout();
   Fit();
 }
@@ -746,7 +932,10 @@ EVT_CHECKBOX(ID_DEVICEACACHECKBOX, VirtualAGC::ConsistencyEvent)
 EVT_RADIOBUTTON(ID_DSKYFULLBUTTON, VirtualAGC::ConsistencyEvent)
 EVT_RADIOBUTTON(ID_DSKYHALFBUTTON, VirtualAGC::ConsistencyEvent)
 EVT_RADIOBUTTON(ID_DSKYLITEBUTTON, VirtualAGC::ConsistencyEvent)
+EVT_RADIOBUTTON(ID_DSKYNAVHALFBUTTON, VirtualAGC::ConsistencyEvent)
 EVT_RADIOBUTTON(ID_DSKYNAVBUTTON, VirtualAGC::ConsistencyEvent)
+EVT_RADIOBUTTON(ID_DSKYAPOBUTTON, VirtualAGC::ConsistencyEvent)
+EVT_RADIOBUTTON(ID_DSKYAPOHALFBUTTON, VirtualAGC::ConsistencyEvent)
 EVT_RADIOBUTTON(ID_DEDAFULLBUTTON, VirtualAGC::ConsistencyEvent)
 EVT_RADIOBUTTON(ID_DEDAHALFBUTTON, VirtualAGC::ConsistencyEvent)
 EVT_RADIOBUTTON(ID_AGCDEBUGNORMALBUTTON, VirtualAGC::ConsistencyEvent)
@@ -811,6 +1000,7 @@ EVT_RADIOBUTTON(ID_AURORA12BUTTON, VirtualAGC::ConsistencyEvent)
 EVT_RADIOBUTTON(ID_SUNBURST37BUTTON, VirtualAGC::ConsistencyEvent)
 EVT_RADIOBUTTON(ID_ZERLINA56BUTTON, VirtualAGC::ConsistencyEvent)
 EVT_RADIOBUTTON(ID_SUPERJOBBUTTON, VirtualAGC::ConsistencyEvent)
+EVT_RADIOBUTTON(ID_TICTACTOEBUTTON, VirtualAGC::ConsistencyEvent)
 EVT_RADIOBUTTON(ID_AGCCUSTOMBUTTON, VirtualAGC::ConsistencyEvent)
 EVT_RADIOBUTTON(ID_BOREALISBUTTON, VirtualAGC::ConsistencyEvent)
 END_EVENT_TABLE();
@@ -1269,13 +1459,15 @@ VirtualAGC::RunButtonEvent(wxCommandEvent &event)
       if (!FormLmsIni())
         return;
     }
+  if (!FormTiling())
+    return;
   if (!FormCommands())
     return;
   if (!FormScript())
     return;
   RunButton->Enable(false);
   Hide();
-  SimulationWindow = new Simulation(this, wxID_ANY, wxEmptyString);
+  SimulationWindow = new Simulation(this, wxID_ANY, wxEmptyString, wxDefaultPosition, wxDefaultSize);
   SimulationWindow->Enable(true);
   int mission;
   for (mission = ID_FIRSTMISSION; mission < ID_AGCCUSTOMBUTTON; mission++)
@@ -1339,13 +1531,17 @@ VirtualAGC::RunButtonEvent(wxCommandEvent &event)
   SimulationWindow->MoreButton->Enable();
   SimulationWindow->DetailPanel->Hide();
   SimulationWindow->Fit();
+  wxSize s = SimulationWindow->GetClientSize();
+  wxPoint p = SimulationWindow->UploadButton->GetPosition();
+  SimulationWindow->SetClientSize(wxSize(s.x, p.y + SCALED(80)));
   SimulationWindow->Show();
+  SimulationWindow->SetPosition(wxPoint(xSimulate, ySimulate));
 #ifdef WIN32
   wxString Command = wxT ("simulate2.bat");
 #else
   wxString Command = wxT("./simulate");
 #endif
-  wxExecute(Command, wxEXEC_SYNC | wxEXEC_NODISABLE);
+  wxExecute(Command, wxEXEC_SYNC | wxEXEC_NODISABLE | wxEXEC_HIDE_CONSOLE);
   SimulationWindow->Close();
   delete SimulationWindow;
   Show();
@@ -1506,6 +1702,7 @@ VirtualAGC::set_properties()
               missionConstants[mission - ID_FIRSTMISSION].tooltip));
     }
   AgcCustomButton->SetBackgroundColour(wxColour(255, 255, 255));
+  AgcCustomButton->SetForegroundColour(wxColour(0, 0, 0));
   AgcCustomButton->SetToolTip(
       wxT(
           "Click here to run your own personal software creation on the AGC system.  You should first have compiled your assembly-language source code using the yaYUL program to create an executable binary."));
@@ -1517,8 +1714,9 @@ VirtualAGC::set_properties()
       wxT(
           "If you wish to run guidance-computer software you have written yourself rather than actual mission software, you can put the filename here.  It must already have been compiled into binary executable format.  If you want to actually compile the software in addition, use the \"...\" button to the right."));
   AgcCustomFilename->Enable(false);
-  AgcFilenameBrowse->SetMinSize(wxSize(50, 24));
+  AgcFilenameBrowse->SetMinSize(wxSize(SCALED(50), SCALED(24)));
   AgcFilenameBrowse->SetBackgroundColour(wxColour(240, 240, 240));
+  AgcFilenameBrowse->SetForegroundColour(wxColour(0, 0, 0));
   AgcFilenameBrowse->SetToolTip(
       wxT(
           "Click this button to select the name of the AGC runtime software using a file-selection dialog.  This can be either a pre-compiled binary, or it can be AGC assembly-language source code.  If the latter, then VirtualAGC will actually compile it for you using the yaYUL utility."));
@@ -1526,6 +1724,7 @@ VirtualAGC::set_properties()
   if (!maximumSquish)
     {
       DeviceListLabel->SetBackgroundColour(wxColour(255, 255, 255));
+      DeviceListLabel->SetForegroundColour(wxColour(0, 0, 0));
       DeviceListLabel->SetFont(
           wxFont(12, wxFONTFAMILY_DEFAULT, wxFONTSTYLE_NORMAL, wxFONTWEIGHT_BOLD, 1, wxT("")));
       DeviceListLabel->SetToolTip(
@@ -1533,86 +1732,104 @@ VirtualAGC::set_properties()
               "In this area, you can select the particular computers and peripherals devices which will be simulated, along with the controls that will be displayed."));
     }
   DeviceAgcCheckbox->SetBackgroundColour(wxColour(255, 255, 255));
+  DeviceAgcCheckbox->SetForegroundColour(wxColour(0, 0, 0));
   DeviceAgcCheckbox->SetToolTip(
       wxT(
           "We assume that you will ALWAYS need to run the simulated guidance computer (AGC), so we don't allow you the option of deselecting it."));
   DeviceAgcCheckbox->Enable(false);
   DeviceAgcCheckbox->SetValue(1);
   DeviceDskyCheckbox->SetBackgroundColour(wxColour(255, 255, 255));
+  DeviceDskyCheckbox->SetForegroundColour(wxColour(0, 0, 0));
   DeviceDskyCheckbox->SetToolTip(
       wxT(
           "We assume that you will ALWAYS need to run the simulated display/keypad (DSKY), so we don't allow you the option of deselecting it."));
   DeviceDskyCheckbox->Enable(false);
   DeviceDskyCheckbox->SetValue(1);
   DeviceAcaCheckbox->SetBackgroundColour(wxColour(255, 255, 255));
+  DeviceAcaCheckbox->SetForegroundColour(wxColour(0, 0, 0));
   DeviceAcaCheckbox->SetToolTip(
       wxT(
           "The ACA is the rotational hand-controller (stick) used by the astronauts to control thrusters.  To use it, you must have a supported 3D joystick."));
-  JoystickConfigure->SetMinSize(wxSize(70, 24));
+  JoystickConfigure->SetMinSize(wxSize(SCALED(70), SCALED(LINE_SIZE)));
   JoystickConfigure->SetBackgroundColour(wxColour(240, 240, 240));
+  JoystickConfigure->SetForegroundColour(wxColour(0, 0, 0));
   JoystickConfigure->SetToolTip(
       wxT("Click this to run the joystick-configurator program."));
   DeviceTelemetryCheckbox->SetBackgroundColour(wxColour(255, 255, 255));
+  DeviceTelemetryCheckbox->SetForegroundColour(wxColour(0, 0, 0));
   DeviceTelemetryCheckbox->SetToolTip(
       wxT(
           "The telemetry downlink monitor displays information which the guidance computer continually transmits to mission control.  Unfortunately, it does not mimic the actual APPEARANCE of the display screens used in mission control, because nobody seems to know exactly how they looked."));
   DeviceAeaCheckbox->SetBackgroundColour(wxColour(255, 255, 255));
+  DeviceAeaCheckbox->SetForegroundColour(wxColour(0, 0, 0));
   DeviceAeaCheckbox->SetToolTip(
       wxT(
           "The AEA (or sometimes AGS) is a completely separate computer system in the LM which could be used (but never was used in a real mission) in case of failure of the guidance computer, in order to abort."));
   DeviceDedaCheckbox->SetBackgroundColour(wxColour(255, 255, 255));
+  DeviceDedaCheckbox->SetForegroundColour(wxColour(0, 0, 0));
   DeviceDedaCheckbox->SetToolTip(
       wxT(
           "The DEDA was the display/keyboard interface used for the LM abort computer (AEA)."));
   DeviceDedaCheckbox->Enable(false);
   DeviceCpumonCheckbox->SetBackgroundColour(wxColour(255, 255, 255));
+  DeviceCpumonCheckbox->SetForegroundColour(wxColour(0, 0, 0));
   DeviceCpumonCheckbox->SetToolTip(
       wxT(
           "This is the main window for the \"LM_simulator\" subsystem.  While designed for the LM and not yet adapted for the CM, it is of some use in CM simulations as well.  This particular window provides a continuous display of the state of the guidance computer's input/output channels.  It does not correspond to anything that actually existed in the spacecraft.  This needs to be selected in order to select any of the peripheral devices appearing below."));
   DeviceImuCheckbox->SetBackgroundColour(wxColour(255, 255, 255));
+  DeviceImuCheckbox->SetForegroundColour(wxColour(0, 0, 0));
   DeviceImuCheckbox->SetToolTip(
       wxT(
           "This is part of the \"LM_Simulator\" subsystem.  It is basically an interface to the Inertial Monitoring Unit (IMU).  It gives continuous feedback on the velocity and attitude of the spacecraft.  The FDAI (8-ball) provides a visual status of the pitch/yaw/roll.  "));
   DeviceImuCheckbox->Enable(false);
   DeviceDiscoutCheckbox->SetBackgroundColour(wxColour(255, 255, 255));
+  DeviceDiscoutCheckbox->SetForegroundColour(wxColour(0, 0, 0));
   DeviceDiscoutCheckbox->SetToolTip(
       wxT(
           "This is part of the \"LM_Simulator\" subsystem.  It provides a visual indicator of the states of various discrete signals controlled by the guidance computer.  In the actual spacecraft, these signals were not all collected together into a single window like this."));
   DeviceDiscoutCheckbox->Enable(false);
   DeviceCrewinCheckbox->SetBackgroundColour(wxColour(255, 255, 255));
+  DeviceCrewinCheckbox->SetForegroundColour(wxColour(0, 0, 0));
   DeviceCrewinCheckbox->SetToolTip(
       wxT(
           "This is part of the \"LM_Simulator\" subsystem.  It provides a way to turn various signals on or off (as the crew would have done with switches or buttons) and to feed those signals to the guidance computer."));
   DeviceCrewinCheckbox->Enable(false);
   DeviceSysinCheckbox->SetBackgroundColour(wxColour(255, 255, 255));
+  DeviceSysinCheckbox->SetForegroundColour(wxColour(0, 0, 0));
   DeviceSysinCheckbox->SetToolTip(
       wxT(
           "This is part of the \"LM_Simulator\" subsystem.  It provides a way to set the states of various signals used as inputs to the guidance computer that would normally have been set by systems within the spacecraft that are not present in this simulation."));
   DeviceSysinCheckbox->Enable(false);
   DevicePropulsionCheckbox->SetBackgroundColour(wxColour(255, 255, 255));
+  DevicePropulsionCheckbox->SetForegroundColour(wxColour(0, 0, 0));
   DevicePropulsionCheckbox->SetToolTip(
       wxT(
           "This is part of the \"LM_Simulator\" subsystem.  It provides a continuous monitor of the spacecraft's fuel level, thrust, and so on.  The data is closely tied to the LM at this point, and is limited value in the CM."));
   DevicePropulsionCheckbox->Enable(false);
   NoviceButton->SetBackgroundColour(wxColour(240, 240, 240));
+  NoviceButton->SetForegroundColour(wxColour(0, 0, 0));
   NoviceButton->SetToolTip(
       wxT(
           "Click this button to set the minimum reasonable combination of devices above without having to go through the list and select them or deselect them one-by-one."));
   ExpertButton->SetBackgroundColour(wxColour(240, 240, 240));
+  ExpertButton->SetForegroundColour(wxColour(0, 0, 0));
   ExpertButton->SetToolTip(
       wxT(
           "Click this button to set the maximum reasonable combination of devices above, given the simulation type being run, without having to go through the list and select them or deselect them one-by-one."));
   AgcSourceButton->SetBackgroundColour(wxColour(240, 240, 240));
+  AgcSourceButton->SetForegroundColour(wxColour(0, 0, 0));
   AgcSourceButton->SetToolTip(
       wxT(
           "Click this to view the assembly listing (source code) for the selected AGC simulation type(s)."));
   AeaSourceButton->SetBackgroundColour(wxColour(240, 240, 240));
+  AeaSourceButton->SetForegroundColour(wxColour(0, 0, 0));
   AeaSourceButton->SetToolTip(
       wxT(
           "Click this to view the selected AEA Flight Program assembly listing."));
   if (!maximumSquish)
     {
       OptionList->SetBackgroundColour(wxColour(255, 255, 255));
+      OptionList->SetForegroundColour(wxColour(0, 0, 0));
       OptionList->SetFont(wxFont(12, wxFONTFAMILY_DEFAULT, wxFONTSTYLE_NORMAL, wxFONTWEIGHT_BOLD, 1, wxT("")));
       OptionList->SetToolTip(
           wxT(
@@ -1631,19 +1848,23 @@ VirtualAGC::set_properties()
   CustomResumeButton->SetToolTip(
       wxT("Select a custom memory-core file from which to resume operation."));
   CoreFilename->SetBackgroundColour(wxColour(255, 255, 255));
+  CoreFilename->SetForegroundColour(wxColour(0, 0, 0));
   CoreFilename->Enable(false);
-  CoreBrowse->SetMinSize(wxSize(50, 24));
+  CoreBrowse->SetMinSize(wxSize(SCALED(50), SCALED(24)));
   CoreBrowse->SetBackgroundColour(wxColour(240, 240, 240));
+  CoreBrowse->SetForegroundColour(wxColour(0, 0, 0));
   CoreBrowse->SetToolTip(
       wxT(
           "Click this button to select the name of an AGC core dump from which to resume execution."));
   CoreBrowse->Enable(false);
-  CoreSaveButton->SetMinSize(wxSize(50, 24));
+  CoreSaveButton->SetMinSize(wxSize(SCALED(50), SCALED(24)));
   CoreSaveButton->SetBackgroundColour(wxColour(240, 240, 240));
+  CoreSaveButton->SetForegroundColour(wxColour(0, 0, 0));
   CoreSaveButton->SetToolTip(
       wxT(
           "Click this button to preserve the most-recent core-dump so that you can resume operation from it later, by name."));
   DskyLabel->SetBackgroundColour(wxColour(255, 255, 255));
+  DskyLabel->SetForegroundColour(wxColour(0, 0, 0));
   DskyFullButton->SetToolTip(
       wxT("This is the default display/keypad simulation."));
   DskyFullButton->SetValue(1);
@@ -1655,15 +1876,23 @@ VirtualAGC::set_properties()
           "The DSKY Lite is an alternate simulation of the display/keypad unit, using software contributed by Stephan Hotto.  There may be some circumstances under which you would find it useful.  However, it can only be used if in the \"Devices\" menu you select \"AGC CPU Bus/Input/Output Monitor\" and DO NOT select \"Telemetry Downlink Monitor\"."));
   DskyNavButton->SetToolTip(
       wxT("Nav-bay DSKY (vs main control-panel DSKY), for Block I only."));
+  DskyNavHalfButton->SetToolTip(
+      wxT("Nav-bay DSKY, half-size, for Block I only."));
+  DskyApoButton->SetToolTip(
+      wxT("Alternate ApoDisKey in place of yaDSKY2"));
+  DskyApoHalfButton->SetToolTip(
+      wxT("Alternate ApoDisKey in place of yaDSKY2, half size"));
   DownlinkLabel->SetBackgroundColour(wxColour(255, 255, 255));
-  TelemetryResizable->SetToolTip(
-      wxT(
-          "Uses a format for the telemetry display in which the text size and display size is adjustable."));
-  TelemetryResizable->SetValue(1);
-  TelemetryRetro->SetToolTip(
-      wxT(
-          "The telemetry-display has a \"retro\" appearance, in which it looks somewhat like it's a CRT such as those from mission control.  However, it is not resizable and consumes quite a lot of space on your computer's actual display."));
+  DownlinkLabel->SetForegroundColour(wxColour(0, 0, 0));
+  //TelemetryResizable->SetToolTip(
+  //    wxT(
+  //        "Uses a format for the telemetry display in which the text size and display size is adjustable."));
+  //TelemetryResizable->SetValue(1);
+  //TelemetryRetro->SetToolTip(
+  //    wxT(
+  //        "The telemetry-display has a \"retro\" appearance, in which it looks somewhat like it's a CRT such as those from mission control.  However, it is not resizable and consumes quite a lot of space on your computer's actual display."));
   DedaLabel->SetBackgroundColour(wxColour(255, 255, 255));
+  DedaLabel->SetForegroundColour(wxColour(0, 0, 0));
   DedaFullButton->SetToolTip(
       wxT("This is the default AEA display/keypad simulation."));
   DedaFullButton->SetValue(1);
@@ -1671,6 +1900,7 @@ VirtualAGC::set_properties()
       wxT(
           "The half-size DEDA simulation can be useful if you have limited free space on your display screen."));
   AgcDebugLabel->SetBackgroundColour(wxColour(255, 255, 255));
+  AgcDebugLabel->SetForegroundColour(wxColour(0, 0, 0));
   AgcDebugNormalButton->SetToolTip(
       wxT("Click this to run the simulated AGC CPU in the normal manner."));
   AgcDebugNormalButton->SetValue(1);
@@ -1678,6 +1908,7 @@ VirtualAGC::set_properties()
       wxT(
           "Click this to run the simulated AGC CPU with a debug monitor that allows single-stepping, breakpoints, disassembly, dumping/editing of memory, etc."));
   AeaDebugLabel->SetBackgroundColour(wxColour(255, 255, 255));
+  AeaDebugLabel->SetForegroundColour(wxColour(0, 0, 0));
   AeaDebugNormalButton->SetToolTip(
       wxT("This is the normal manner of simulating the AEA/AGS."));
   AeaDebugNormalButton->SetValue(1);
@@ -1685,57 +1916,68 @@ VirtualAGC::set_properties()
       wxT(
           "Click this to run the simulated AEA/AGS CPU with a debug monitor that allows single-stepping, breakpoints, disassembly, dumping/editing of memory, etc."));
   FlightProgram4Button->SetBackgroundColour(wxColour(255, 255, 255));
+  FlightProgram4Button->SetForegroundColour(wxColour(0, 0, 0));
   FlightProgram4Button->SetToolTip(
       wxT(
           "Click this to simulate the Apollo 9 LM for the first orbital test of the LM.  This will run the AEA/AGS software designated as Flight Program 3 or 4."));
   FlightProgram4Button->Enable(false);
   FlightProgram5Button->SetBackgroundColour(wxColour(255, 255, 255));
+  FlightProgram5Button->SetForegroundColour(wxColour(0, 0, 0));
   FlightProgram5Button->SetToolTip(
       wxT(
           "Click this to simulate the Apollo 10 LM, which was the first LM test in the lunar neighborhood.  The Apollo 10 mission experienced a mishap associated with the AGC and AEA both trying to control the LM simultaneously.  This will run the AEA/AGS software designated as Flight Program 5."));
   FlightProgram5Button->Enable(false);
   FlightProgram6Button->SetBackgroundColour(wxColour(255, 255, 255));
+  FlightProgram6Button->SetForegroundColour(wxColour(0, 0, 0));
   FlightProgram6Button->SetToolTip(
       wxT(
           "Click this to simulate the Apollo 11-12 LM for the FIRST moon landing.  This will run the AEA/AGS software designated as Flight Program 6 (June 1969)."));
   FlightProgram6Button->SetValue(1);
   FlightProgram7Button->SetBackgroundColour(wxColour(255, 255, 255));
+  FlightProgram7Button->SetForegroundColour(wxColour(0, 0, 0));
   FlightProgram7Button->SetToolTip(
       wxT(
           "Click this to simulate the Apollo 13-14 LM.  This will run the AEA/AGS software designated as Flight Program 7."));
   FlightProgram7Button->Enable(false);
   FlightProgram8Button->SetBackgroundColour(wxColour(255, 255, 255));
+  FlightProgram8Button->SetForegroundColour(wxColour(0, 0, 0));
   FlightProgram8Button->SetToolTip(
       wxT(
           "Click this to simulate the Apollo 15-17 LM.  This will run the AEA/AGS software designated as Flight Program 8 (December 1970)."));
   if (!maximumSquish)
     {
       AeaCustomButton->SetBackgroundColour(wxColour(255, 255, 255));
+      AeaCustomButton->SetForegroundColour(wxColour(0, 0, 0));
       AeaCustomButton->SetToolTip(
           wxT(
               "Click here to run your own personal software creation on the AEA/AGS system.  You should first have compiled your assembly-language source code using the yaLEMAP program to create an executable binary."));
       AeaCustomFilename->SetBackgroundColour(wxColour(255, 255, 255));
+      AeaCustomFilename->SetForegroundColour(wxColour(0, 0, 0));
       AeaCustomFilename->SetForegroundColour(wxColour(16, 16, 16));
       AeaCustomFilename->SetToolTip(
           wxT(
               "If you wish to run abort-computer software you have written yourself rather than actual mission software, you can put the filename here.  It must already have been compiled into binary executable format.  If you want to actually compile the software in addition, use the \"...\" button to the right."));
       AeaCustomFilename->Enable(false);
-      AeaFilenameBrowse->SetMinSize(wxSize(50, 24));
+      AeaFilenameBrowse->SetMinSize(wxSize(SCALED(50), SCALED(24)));
       AeaFilenameBrowse->SetBackgroundColour(wxColour(240, 240, 240));
+      AeaFilenameBrowse->SetForegroundColour(wxColour(0, 0, 0));
       AeaFilenameBrowse->SetToolTip(
           wxT(
               "Click this button to select the name of the AEA runtime software using a file-selection dialog.  This can be either a pre-compiled binary, or it can be AEA assembly-language source code.  If the latter, then VirtualAGC will actually compile it for you using the yaLEMAP utility."));
       AeaFilenameBrowse->Enable(false);
     }
   RunButton->SetBackgroundColour(wxColour(240, 240, 240));
+  RunButton->SetForegroundColour(wxColour(0, 0, 0));
   RunButton->SetToolTip(
       wxT(
           "Click this button to begin running the simulation using all of the various options and settings selected above!"));
   DefaultsButton->SetBackgroundColour(wxColour(240, 240, 240));
+  DefaultsButton->SetForegroundColour(wxColour(0, 0, 0));
   DefaultsButton->SetToolTip(
       wxT(
           "When you change the various settings above, they are persistent.  In other words, if you run this program again, the settings will be whatever you set them at in the prior run.  If you click this button, it will return the settings to the defaults that existed when this program was first installed."));
   ExitButton->SetBackgroundColour(wxColour(240, 240, 240));
+  ExitButton->SetForegroundColour(wxColour(0, 0, 0));
   ExitButton->SetToolTip(
       wxT(
           "Click this button to exit this program.  Your settings will be saved."));
@@ -1760,7 +2002,7 @@ VirtualAGC::do_layout()
   wxGridSizer* grid_sizer_1 = new wxGridSizer(2, 3, 0, 0);
   wxStaticBoxSizer* sizer_22 = new wxStaticBoxSizer(sizer_22_staticbox,
       wxHORIZONTAL);
-  wxGridSizer* grid_sizer_2 = new wxGridSizer(3, 5, 0, 0);
+  wxGridSizer* grid_sizer_2 = new wxGridSizer(4 /*rows*/,4 /*cols*/, 0, 0);
   wxStaticBoxSizer* sizer_18 = new wxStaticBoxSizer(sizer_18_staticbox,
       wxVERTICAL);
   wxBoxSizer* sizer_34 = new wxBoxSizer(wxHORIZONTAL);
@@ -1787,7 +2029,7 @@ VirtualAGC::do_layout()
   wxGridSizer* LeftSizer = new wxGridSizer(1, 6, 0, 0);
   if (!maximumSquish)
     {
-      TopSizer->Add(20, 5, 0, wxALIGN_CENTER_HORIZONTAL, 0);
+      TopSizer->Add(SCALED(20), SCALED(5), 0, wxALIGN_CENTER_HORIZONTAL, 0);
       LeftSizer->Add(Patch1Bitmap, 0,
           wxALIGN_CENTER_HORIZONTAL | wxALIGN_CENTER_VERTICAL, 0);
       LeftSizer->Add(Patch7Bitmap, 0,
@@ -1801,11 +2043,11 @@ VirtualAGC::do_layout()
       LeftSizer->Add(Patch11Bitmap, 0,
           wxALIGN_CENTER_HORIZONTAL | wxALIGN_CENTER_VERTICAL, 0);
       HeaderSizer->Add(LeftSizer, 1, wxEXPAND, 0);
-      MiddleSizer->Add(20, 20, 1,
+      MiddleSizer->Add(SCALED(20), SCALED(20), 1,
           wxALIGN_CENTER_VERTICAL, 0);
       MiddleSizer->Add(PatchBitmap, 0,
           wxALIGN_CENTER_VERTICAL, 0);
-      MiddleSizer->Add(20, 20, 1,
+      MiddleSizer->Add(SCALED(20), SCALED(20), 1,
           wxALIGN_CENTER_VERTICAL, 0);
       HeaderSizer->Add(MiddleSizer, 1, wxEXPAND, 0);
       RightSizer->Add(Patch12Bitmap, 0,
@@ -1822,14 +2064,14 @@ VirtualAGC::do_layout()
           wxALIGN_CENTER_HORIZONTAL | wxALIGN_CENTER_VERTICAL, 0);
       HeaderSizer->Add(RightSizer, 1, wxEXPAND, 0);
       TopSizer->Add(HeaderSizer, 0, wxEXPAND, 0);
-      TopSizer->Add(20, 5, 0, wxALIGN_CENTER_HORIZONTAL, 0);
+      TopSizer->Add(SCALED(20), SCALED(5), 0, wxALIGN_CENTER_HORIZONTAL, 0);
       TopSizer->Add(TopLine, 0, wxEXPAND, 0);
-      sizer_4->Add(20, 10, 0,
+      sizer_4->Add(SCALED(20), SCALED(10), 0,
           wxALIGN_CENTER_HORIZONTAL | wxALIGN_CENTER_VERTICAL, 0);
       sizer_4->Add(SimTypeLabel, 0, wxALIGN_CENTER_HORIZONTAL, 0);
-      sizer_11->Add(20, 20, 0,
+      sizer_11->Add(SCALED(20), SCALED(20), 0,
           wxALIGN_CENTER_VERTICAL, 0);
-      sizer_14->Add(20, 10, 0, wxEXPAND, 0);
+      sizer_14->Add(SCALED(20), SCALED(10), 0, wxEXPAND, 0);
     }
   int mission;
   for (mission = ID_FIRSTMISSION; mission < ID_AGCCUSTOMBUTTON; mission++)
@@ -1838,23 +2080,24 @@ VirtualAGC::do_layout()
   sizer_15->Add(AgcCustomFilename, 1, wxEXPAND, 0);
   sizer_15->Add(AgcFilenameBrowse, 0, 0, 0);
   sizer_19->Add(sizer_15, 0, wxEXPAND, 0);
+  sizer_19->Add(SCALED(5), SCALED(5), 0, 0, 0);
   sizer_14->Add(sizer_19, 1, wxEXPAND, 0);
   if (!maximumSquish)
-    sizer_14->Add(20, 10, 0, wxEXPAND, 0);
+    sizer_14->Add(SCALED(20), SCALED(10), 0, wxEXPAND, 0);
   sizer_13->Add(sizer_14, 1, wxEXPAND, 0);
   sizer_11->Add(sizer_13, 1, wxEXPAND, 0);
   if (!maximumSquish)
-    sizer_11->Add(20, 20, 0,
+    sizer_11->Add(SCALED(20), SCALED(20), 0,
        wxALIGN_CENTER_VERTICAL, 0);
   sizer_4->Add(sizer_11, 1, wxEXPAND, 0);
   sizer_2->Add(sizer_4, 1, wxEXPAND, 0);
 
   sizer_6->Add(static_line_2, 0, wxEXPAND, 0);
   if (!maximumSquish)
-    sizer_6->Add(20, 20, 0, wxALIGN_CENTER_VERTICAL,
+    sizer_6->Add(SCALED(20), SCALED(20), 0, wxALIGN_CENTER_VERTICAL,
         0);
   if (!maximumSquish)
-    sizer_7->Add(20, 10, 0, wxALIGN_CENTER_HORIZONTAL | wxALIGN_CENTER_VERTICAL,
+    sizer_7->Add(SCALED(20), SCALED(10), 0, wxALIGN_CENTER_HORIZONTAL | wxALIGN_CENTER_VERTICAL,
         0);
   if (DropDown)
     {
@@ -1862,12 +2105,12 @@ VirtualAGC::do_layout()
       if (!maximumSquish)
         {
           sizer_7->Add(SimTypeLabel2, 0, wxALIGN_CENTER_HORIZONTAL, 0);
-          sizer_7->Add(20, 10, 0,
+          sizer_7->Add(SCALED(20), SCALED(10), 0,
               wxALIGN_CENTER_HORIZONTAL | wxALIGN_CENTER_VERTICAL, 0);
         }
       sizer_7->Add(DeviceAGCversionDropDownList, 0, 0, 0);
       if (!maximumSquish)
-        sizer_7->Add(20, 10, 0,
+        sizer_7->Add(SCALED(20), SCALED(10), 0,
             wxALIGN_CENTER_HORIZONTAL | wxALIGN_CENTER_VERTICAL, 0);
     }
   else
@@ -1879,15 +2122,11 @@ VirtualAGC::do_layout()
   if (!maximumSquish)
     {
       sizer_7->Add(DeviceListLabel, 0, wxALIGN_CENTER_HORIZONTAL, 0);
-      sizer_7->Add(20, 10, 0,
+      sizer_7->Add(SCALED(20), SCALED(10), 0,
           wxALIGN_CENTER_HORIZONTAL | wxALIGN_CENTER_VERTICAL, 0);
     }
   sizer_7->Add(DeviceAgcCheckbox, 0, 0, 0);
   sizer_7->Add(DeviceDskyCheckbox, 0, 0, 0);
-  sizer_37->Add(DeviceAcaCheckbox, 0, wxALIGN_CENTER_VERTICAL, 0);
-  sizer_37->Add(2, 20, 1, 0, 0);
-  sizer_37->Add(JoystickConfigure, 0, 0, 0);
-  sizer_7->Add(sizer_37, 0, wxEXPAND, 0);
   sizer_7->Add(DeviceTelemetryCheckbox, 0, 0, 0);
   sizer_7->Add(DeviceAeaCheckbox, 0, 0, 0);
   sizer_7->Add(DeviceDedaCheckbox, 0, 0, 0);
@@ -1900,51 +2139,55 @@ VirtualAGC::do_layout()
   sizer_36->Add(DevicePropulsionCheckbox, 0, 0, 0);
   sizer_35->Add(sizer_36, 15, wxEXPAND, 0);
   sizer_7->Add(sizer_35, 1, wxEXPAND, 0);
+  sizer_37->Add(DeviceAcaCheckbox, 0, wxALIGN_CENTER_VERTICAL, 0);
+  sizer_37->Add(SCALED(2), SCALED(20), 1, 0, 0);
+  sizer_37->Add(JoystickConfigure, 0, 0, 0);
+  sizer_7->Add(sizer_37, 0, wxEXPAND, 0);
   if (!maximumSquish)
-    sizer_7->Add(20, 10, 0, wxALIGN_CENTER_HORIZONTAL | wxALIGN_CENTER_VERTICAL,
+    sizer_7->Add(SCALED(20), SCALED(10), 0, wxALIGN_CENTER_HORIZONTAL | wxALIGN_CENTER_VERTICAL,
         0);
   sizer_12->Add(NoviceButton, 0, 0, 2);
   if (!maximumSquish)
-    sizer_12->Add(20, 20, 0,
+    sizer_12->Add(SCALED(20), SCALED(20), 0,
         wxALIGN_CENTER_VERTICAL, 0);
   sizer_12->Add(ExpertButton, 0, 0, 0);
   sizer_7->Add(sizer_12, 0, wxALIGN_CENTER_HORIZONTAL | wxALIGN_CENTER_VERTICAL,
       0);
   if (!maximumSquish)
-    sizer_7->Add(20, 10, 0, 0, 0);
+    sizer_7->Add(SCALED(20), SCALED(10), 0, 0, 0);
   sizer_6->Add(sizer_7, 1, 0, 0);
   if (!maximumSquish)
-    sizer_6->Add(20, 20, 0, wxALIGN_CENTER_VERTICAL,
+    sizer_6->Add(SCALED(20), SCALED(20), 0, wxALIGN_CENTER_VERTICAL,
         0);
   sizer_6->Add(static_line_3, 0, wxEXPAND, 0);
   sizer_5->Add(sizer_6, 0, wxEXPAND, 0);
   sizer_5->Add(static_line_5, 0, wxEXPAND, 0);
   if (!maximumSquish)
-    sizer_5->Add(20, 10, 10, wxEXPAND, 0);
+    sizer_5->Add(SCALED(20), SCALED(10), 10, wxEXPAND, 0);
   if (!maximumSquish)
-    sizer_1_copy->Add(20, 20, 1, 0, 0);
+    sizer_1_copy->Add(SCALED(20), SCALED(30), 1, 0, 0);
   sizer_1_copy->Add(AgcSourceButton, 0, 0, 0);
   if (!maximumSquish)
-    sizer_1_copy->Add(20, 20, 0, 0, 0);
+    sizer_1_copy->Add(SCALED(20), SCALED(20), 0, 0, 0);
   sizer_1_copy->Add(AeaSourceButton, 0, 0, 0);
   if (!maximumSquish)
-    sizer_1_copy->Add(20, 20, 1, 0, 0);
+    sizer_1_copy->Add(SCALED(20), SCALED(20), 1, 0, 0);
   if (DropDown)
-    sizer_1->Add(20, 20, 0, 0, 0);
+    sizer_1->Add(SCALED(20), SCALED(20), 0, 0, 0);
   sizer_1->Add(sizer_1_copy, 1, wxEXPAND, 0);
   sizer_5->Add(sizer_1, 0, wxEXPAND, 0);
   if (!maximumSquish)
-    sizer_5->Add(20, 10, 0, wxEXPAND, 0);
+    sizer_5->Add(SCALED(20), SCALED(10), 0, wxEXPAND, 0);
   sizer_2->Add(sizer_5, 1, wxEXPAND, 0);
   optionsBox = sizer_8;
   if (!maximumSquish)
     {
-      sizer_8->Add(20, 10, 0,
+      sizer_8->Add(SCALED(20), SCALED(10), 0,
           wxALIGN_CENTER_HORIZONTAL | wxALIGN_CENTER_VERTICAL, 0);
       sizer_8->Add(OptionList, 0, wxALIGN_CENTER_HORIZONTAL, 0);
-      sizer_8->Add(20, 10, 0,
+      sizer_8->Add(SCALED(20), SCALED(10), 0,
           wxALIGN_CENTER_HORIZONTAL | wxALIGN_CENTER_VERTICAL, 0);
-      sizer_9->Add(20, 20, 0,
+      sizer_9->Add(SCALED(20), SCALED(20), 0,
           wxALIGN_CENTER_VERTICAL, 0);
     }
   agcStartupBox = sizer_18;
@@ -1955,30 +2198,39 @@ VirtualAGC::do_layout()
   sizer_34->Add(CoreFilename, 1, wxEXPAND, 0);
   sizer_34->Add(CoreBrowse, 0, 0, 0);
   sizer_34->Add(CoreSaveButton, 0, 0, 0);
+  sizer_34->Add(SCALED(5), SCALED(5), 0, 0, 0);
   sizer_18->Add(sizer_34, 1, wxEXPAND, 0);
+  sizer_18->Add(SCALED(5), SCALED(5), 0, wxALIGN_CENTER_HORIZONTAL, 0);
   sizer_10->Add(sizer_18, 0, wxEXPAND, 0);
-  if (!maximumSquish)
-    sizer_10->Add(20, 10, 0, wxALIGN_CENTER_HORIZONTAL, 0);
   interfaceStylesBox = grid_sizer_2;
   grid_sizer_2->Add(DskyLabel, 0, wxALIGN_CENTER_VERTICAL, 0);
   grid_sizer_2->Add(DskyFullButton, 0, 0, 0);
   grid_sizer_2->Add(DskyHalfButton, 0, 0, 0);
   grid_sizer_2->Add(DskyLiteButton, 0, 0, 0);
+
+  grid_sizer_2->Add(SCALED(20), SCALED(20), 0, 0, 0);
   grid_sizer_2->Add(DskyNavButton, 0, 0, 0);
-  grid_sizer_2->Add(DownlinkLabel, 0, wxALIGN_CENTER_VERTICAL, 0);
-  grid_sizer_2->Add(TelemetryResizable, 0, 0, 0);
-  grid_sizer_2->Add(TelemetryRetro, 0, 0, 0);
-  grid_sizer_2->Add(20, 20, 0, 0, 0);
-  grid_sizer_2->Add(20, 20, 0, 0, 0);
+  grid_sizer_2->Add(DskyNavHalfButton, 0, 0, 0);
+  grid_sizer_2->Add(SCALED(20), SCALED(20), 0, 0, 0);
+
+  grid_sizer_2->Add(SCALED(20), SCALED(20), 0, 0, 0);
+  grid_sizer_2->Add(DskyApoButton, 0, 0, 0);
+  grid_sizer_2->Add(DskyApoHalfButton, 0, 0, 0);
+  grid_sizer_2->Add(SCALED(20), SCALED(20), 0, 0, 0);
+
+  //grid_sizer_2->Add(DownlinkLabel, 0, wxALIGN_CENTER_VERTICAL, 0);
+  //grid_sizer_2->Add(TelemetryResizable, 0, 0, 0);
+  //grid_sizer_2->Add(TelemetryRetro, 0, 0, 0);
+  //grid_sizer_2->Add(SCALED(20), SCALED(20), 0, 0, 0);
+
   grid_sizer_2->Add(DedaLabel, 0, wxALIGN_CENTER_VERTICAL, 0);
   grid_sizer_2->Add(DedaFullButton, 0, 0, 0);
   grid_sizer_2->Add(DedaHalfButton, 0, 0, 0);
-  grid_sizer_2->Add(20, 20, 0, 0, 0);
-  grid_sizer_2->Add(20, 20, 0, 0, 0);
+  grid_sizer_2->Add(SCALED(20), SCALED(20), 0, 0, 0);
   sizer_22->Add(grid_sizer_2, 1, wxEXPAND, 0);
   sizer_10->Add(sizer_22, 0, wxEXPAND, 0);
   if (!maximumSquish)
-    sizer_10->Add(20, 10, 0, wxALIGN_CENTER_HORIZONTAL, 0);
+    sizer_10->Add(SCALED(20), SCALED(10), 0, wxALIGN_CENTER_HORIZONTAL, 0);
   debuggerBox = grid_sizer_1;
   grid_sizer_1->Add(AgcDebugLabel, 0, wxALIGN_CENTER_VERTICAL, 0);
   grid_sizer_1->Add(AgcDebugNormalButton, 0, wxALIGN_CENTER_VERTICAL, 0);
@@ -2000,38 +2252,40 @@ VirtualAGC::do_layout()
       sizer_15_copy->Add(AeaCustomButton, 0, 0, 0);
       sizer_15_copy->Add(AeaCustomFilename, 1, wxEXPAND, 0);
       sizer_15_copy->Add(AeaFilenameBrowse, 0, 0, 0);
+      sizer_15_copy->Add(SCALED(5), SCALED(5), 0, 0, 0);
       sizer_20->Add(sizer_15_copy, 0, wxEXPAND, 0);
+      sizer_20->Add(SCALED(5), SCALED(5), 0, 0, 0);
     }
   sizer_30->Add(sizer_20, 0, wxEXPAND, 0);
   sizer_29->Add(sizer_30, 1, wxEXPAND, 0);
   sizer_10->Add(sizer_29, 0, wxEXPAND, 0);
   if (!maximumSquish)
-    sizer_10->Add(20, 10, 0, wxALIGN_CENTER_HORIZONTAL, 0);
+    sizer_10->Add(SCALED(20), SCALED(10), 0, wxALIGN_CENTER_HORIZONTAL, 0);
   sizer_9->Add(sizer_10, 0, wxEXPAND, 0);
   if (!maximumSquish)
-    sizer_9->Add(20, 20, 0, wxALIGN_CENTER_VERTICAL,
+    sizer_9->Add(SCALED(20), SCALED(20), 0, wxALIGN_CENTER_VERTICAL,
         0);
   sizer_8->Add(sizer_9, 1, wxEXPAND, 0);
   sizer_2->Add(sizer_8, 1, wxEXPAND, 0);
   TopSizer->Add(sizer_2, 0, wxEXPAND, 0);
   TopSizer->Add(static_line_1, 0, wxEXPAND, 0);
   if (!maximumSquish)
-    TopSizer->Add(20, 15, 0,
+    TopSizer->Add(SCALED(20), SCALED(15), 0,
         wxALIGN_CENTER_HORIZONTAL | wxALIGN_CENTER_VERTICAL, 0);
   sizer_3->Add(RunButton, 0,
       wxALIGN_CENTER_VERTICAL, 0);
-  sizer_3->Add(40, 40, 0, wxALIGN_CENTER_VERTICAL,
+  sizer_3->Add(SCALED(40), SCALED(40), 0, wxALIGN_CENTER_VERTICAL,
       0);
   sizer_3->Add(DefaultsButton, 0,
       wxALIGN_CENTER_VERTICAL, 0);
-  sizer_3->Add(40, 40, 0, wxALIGN_CENTER_VERTICAL,
+  sizer_3->Add(SCALED(40), SCALED(40), 0, wxALIGN_CENTER_VERTICAL,
       0);
   sizer_3->Add(ExitButton, 0,
       wxALIGN_CENTER_VERTICAL, 0);
   TopSizer->Add(sizer_3, 0, wxALIGN_CENTER_HORIZONTAL | wxALIGN_CENTER_VERTICAL,
       0);
   if (!maximumSquish)
-    TopSizer->Add(20, 15, 0,
+    TopSizer->Add(SCALED(20), SCALED(15), 0,
         wxALIGN_CENTER_HORIZONTAL | wxALIGN_CENTER_VERTICAL, 0);
   SetSizer(TopSizer);
   TopSizer->Fit(this);
@@ -2051,6 +2305,37 @@ static VirtualAGC *MainFrame;
 bool
 VirtualAgcApp::OnInit()
 {
+#if __APPLE__
+  // Is ApoDisKey installed (MacOS only)?
+  FILE *fmdfind;
+  printf("MacOS detected\n");
+  fmdfind = popen("mdfind kMDItemCFBundleIdentifier=\"com.ramsaycons.ApoDisKey\"", "r");
+  if (fmdfind != NULL)
+    {
+       char line[256];
+       struct stat fileStats;
+       time_t t = 0;
+       while (fgets(line, sizeof(line), fmdfind) != NULL)
+         {
+           char *s = strstr(line, ".app");
+           if (s == NULL)
+               continue;
+           s[4] = 0;
+           printf("Found:  %s\n", line);
+           ApoDisKeyInstalled = true;
+           stat(line, &fileStats);
+           if (fileStats.st_birthtimespec.tv_sec > t) {
+               t = fileStats.st_birthtimespec.tv_sec;
+               strcpy(whereApoDisKey, line);
+           }
+         }
+       printf("Chosen: %s\n", whereApoDisKey);
+    }
+  else
+	  printf("Failure: `popen` could not run `mdfind` for ApoDisKey\n");
+  pclose(fmdfind);
+#endif
+
   wxInitAllImageHandlers();
 
   for (int i = 1; i < argc; i++)
@@ -2085,6 +2370,10 @@ VirtualAgcApp::OnInit()
         {
           ArgEnd.ToLong(&fontFloor);
         }
+      //else if (ArgStart.IsSameAs(wxT("--dpi-scale")))
+      //{
+      //  ArgEnd.ToDouble(&scaleDPI);
+      //}
       else
         {
           Help: printf("USAGE:\n");
@@ -2126,12 +2415,13 @@ VirtualAgcApp::OnInit()
           printf("\twith --squish there is no title bar and hence no way\n");
           printf("\tto unmaximize the program after it is started up.\n");
           printf("\tNote that the program does not generally have a\n");
-          printf("\tmaximization button, nor is it generally resizable.\n");
-          printf("\tso --maximize is actually the only method provided of\n");
-          printf("\tmaximizing the program anyway.\n");
+          printf("\tmaximization button.\n");
           printf("--font-floor=N\n");
           printf("\tSets the minimum allowed font size, in integers.  The\n");
           printf("\tdefault is 8.\n");
+          //printf("--dpi-scale=F\n");
+          //printf("\tA floating-point number (default 1.0) which can work\n");
+          //printf("\taround a failure to correctly detect the DPI.\n");
           exit(1);
         }
     }
@@ -2140,6 +2430,20 @@ VirtualAgcApp::OnInit()
   MainFrame->SetForegroundColour(wxColor (0, 0, 0));
   SetTopWindow(MainFrame);
   MainFrame->Show();
+  MainFrame->Refresh();
+  MainFrame->Update();
+  // The main window inexplicably seems invariably to be sized too short.
+  // The various contortions below represent the detritus of my successive
+  // attempts to work around that.  It doesn't help that each target system
+  // has its own quirks that seem to work actively against my attempts.
+  //wxSize sz = wxSize(-1, SCALED(440));
+  //MainFrame->SetClientSize(sz);
+  //MainFrame->SetClientSize(MainFrame->GetBestSize());
+  wxSize s = MainFrame->GetClientSize();
+  wxPoint p = MainFrame->ExitButton->GetPosition();
+  MainFrame->SetClientSize(wxSize(s.x, p.y + SCALED(60)));
+  // MainFrame->SetName("VirtualAGC");
+  // wxPersistentRegisterAndRestore(MainFrame, "VirtualAGC");
   return true;
 }
 
@@ -2202,6 +2506,7 @@ VirtualAGC::EnforceConsistency(void)
 {
   bool IsCustom = false;
   bool abnormalCase = false;
+  bool allowTelemetry = true;
   bool hasSource = false;
 
   block1 = false;
@@ -2215,7 +2520,9 @@ VirtualAGC::EnforceConsistency(void)
         block1 = (missionConstants[mission - ID_FIRSTMISSION].Block1 == BLOCK1);
         abnormalCase = block1
             || (missionConstants[mission - ID_FIRSTMISSION].noPeripherals
-                == NO_PERIPHERALS);
+                != PERIPHERALS);
+        allowTelemetry = !abnormalCase ||
+            missionConstants[mission - ID_FIRSTMISSION].noPeripherals == TELEMETRY_PERIPHERALS;
         IsLM = (missionConstants[mission - ID_FIRSTMISSION].lm == LM);
         hasSource = (missionConstants[mission - ID_FIRSTMISSION].html[0] != 0);
         break;
@@ -2232,22 +2539,27 @@ VirtualAGC::EnforceConsistency(void)
   CoreSaveButton->Enable(!block1);
   DskyLabel->Enable(true);
   DskyFullButton->Enable(true);
-  DskyHalfButton->Enable(!block1);
+  DskyHalfButton->Enable(true);
   DskyLiteButton->Enable(!block1);
   DskyNavButton->Enable(block1);
-  if (block1 && (DskyHalfButton->GetValue() || DskyLiteButton->GetValue()))
+  DskyNavHalfButton->Enable(block1);
+  DskyApoButton->Enable(ApoDisKeyInstalled && !block1);
+  DskyApoHalfButton->Enable(ApoDisKeyInstalled && !block1);
+  if (block1 && (DskyApoButton->GetValue() || DskyApoHalfButton->GetValue() || DskyLiteButton->GetValue()))
     DskyFullButton->SetValue(true);
-  else if (!block1 && DskyNavButton->GetValue())
+  else if (!block1 && (DskyNavButton->GetValue() || DskyNavHalfButton->GetValue()))
+    DskyFullButton->SetValue(true);
+  else if (DeviceCpumonCheckbox->GetValue() && DskyLiteButton->GetValue())
     DskyFullButton->SetValue(true);
   DownlinkLabel->Enable(!block1);
-  TelemetryResizable->Enable(!block1);
-  TelemetryRetro->Enable(!block1);
+  //TelemetryResizable->Enable(!block1);
+  //TelemetryRetro->Enable(!block1);
   DedaLabel->Enable(!block1);
   DedaFullButton->Enable(!block1);
   DedaHalfButton->Enable(!block1);
-  AgcDebugLabel->Enable(!block1);
-  AgcDebugNormalButton->Enable(!block1);
-  AgcDebugMonitorButton->Enable(!block1);
+  AgcDebugLabel->Enable(true);
+  AgcDebugNormalButton->Enable(true);
+  AgcDebugMonitorButton->Enable(true);
   AeaDebugLabel->Enable(!block1);
   AeaDebugNormalButton->Enable(!block1);
   AeaDebugMonitorButton->Enable(!block1);
@@ -2261,7 +2573,7 @@ VirtualAGC::EnforceConsistency(void)
   IsCustom = AgcCustomButton->GetValue();
   EnableLM(IsLM && !abnormalCase);
   EnableCustomAGC(IsCustom);
-  DeviceTelemetryCheckbox->Enable(!abnormalCase);
+  DeviceTelemetryCheckbox->Enable(allowTelemetry);
   if (!DeviceTelemetryCheckbox->IsEnabled())
     DeviceTelemetryCheckbox->SetValue(false);
   //if (DeviceTelemetryCheckbox->GetValue () && DskyLiteButton->GetValue ())
@@ -2302,8 +2614,8 @@ VirtualAGC::EnforceConsistency(void)
   DskyLiteButton->Enable(
       DeviceCpumonCheckbox->GetValue() /* && !DeviceTelemetryCheckbox->GetValue () */);
   DskyNavButton->Enable(block1);
-  TelemetryResizable->Enable(DeviceTelemetryCheckbox->GetValue());
-  TelemetryRetro->Enable(DeviceTelemetryCheckbox->GetValue());
+  //TelemetryResizable->Enable(DeviceTelemetryCheckbox->GetValue());
+  //TelemetryRetro->Enable(DeviceTelemetryCheckbox->GetValue());
   DownlinkLabel->Enable(DeviceTelemetryCheckbox->GetValue());
   AgcSourceButton->Enable(
       hasSource
@@ -2437,7 +2749,7 @@ VirtualAGC::SetDefaultConfiguration(void)
       DskyHalfButton->SetValue(true);
     }
   AeaDebugNormalButton->SetValue(true);
-  TelemetryResizable->SetValue(true);
+  //TelemetryResizable->SetValue(true);
 }
 
 // Reads a configuration file to get all of the settings.
@@ -2525,6 +2837,9 @@ VirtualAGC::ReadConfigurationFile(void)
               CHECK_TRUE_FALSE_SETTING(AeaDebugMonitorButton);
               CHECK_TRUE_FALSE_SETTING(TelemetryResizable);
               CHECK_TRUE_FALSE_SETTING(TelemetryRetro);
+              CHECK_TRUE_FALSE_SETTING(DskyApoButton);
+              CHECK_TRUE_FALSE_SETTING(DskyApoHalfButton);
+              CHECK_TRUE_FALSE_SETTING(DskyNavHalfButton);
             }
           Fin.Close();
           if (DropDown)
@@ -2615,6 +2930,9 @@ VirtualAGC::WriteConfigurationFile(void)
       WRITE_TRUE_FALSE_SETTING(AeaDebugMonitorButton);
       WRITE_TRUE_FALSE_SETTING(TelemetryResizable);
       WRITE_TRUE_FALSE_SETTING(TelemetryRetro);
+      WRITE_TRUE_FALSE_SETTING(DskyApoButton);
+      WRITE_TRUE_FALSE_SETTING(DskyApoHalfButton);
+      WRITE_TRUE_FALSE_SETTING(DskyNavHalfButton);
       Fout.Close();
     }
   else
@@ -2749,6 +3067,229 @@ VirtualAGC::FormLmsIni(void)
   return (true);
 }
 
+// Forms the tiling for the constellation of user-interface windows in a
+// simulation.
+bool
+VirtualAGC::FormTiling(void)
+{
+    int xScreen, yScreen, wScreen, hScreen;
+    wxClientDisplayRect(&xScreen, &yScreen, &wScreen, &hScreen);
+    printf("Display rect: %d %d %d %d\n", xScreen, yScreen, wScreen, hScreen);
+    //printf("DPI scale factor: %g\n", this->GetDPIScaleFactor());
+
+    xScreen += 5;
+    yScreen += 5;
+    wScreen -= 10;
+    hScreen -= 10;
+    showSimulate = 0, xSimulate = 0, ySimulate = 0, wSimulate = 0, hSimulate = 0;
+    showDSKY = 0, xDSKY = 0, yDSKY = 0, wDSKY = 0, hDSKY = 0;
+    showDEDA = 0, xDEDA = 0, yDEDA = 0, wDEDA = 0, hDEDA = 0;
+    showTelemetry = 0, xTelemetry = 0, yTelemetry = 0, wTelemetry = 0, hTelemetry = 0;
+
+    // First, figure out which windows are going to be displayed during the
+    // simulation, and get their heights and widths.  We can't *really* know
+    // the geometry of any given window on all of the possible platforms, so we
+    // try to give a conservative upper limit.
+    showSimulate = 1;
+    wSimulate = 400 /*565*/;
+    hSimulate = 225 /*690*/;
+    if (DeviceDskyCheckbox->GetValue())
+    {
+        showDSKY = 1;
+        if (block1) {
+            if (DskyFullButton->GetValue()) {
+              wDSKY = 590;
+              hDSKY = 600;
+            }
+            else if (DskyHalfButton->GetValue()) {
+              wDSKY = 300;  // TBD
+              hDSKY = 325;  // TBD
+            }
+            else if (DskyNavButton->GetValue()) {
+              wDSKY = 350;
+              hDSKY = 1030;
+            }
+            else if (DskyNavHalfButton->GetValue()) {
+              wDSKY = 175;  // TBD
+              hDSKY = 610;  // TBD
+            }
+            else
+                return false;
+        } else {
+            if (DskyFullButton->GetValue()) {
+              wDSKY = 580;
+              hDSKY = 670;
+            }
+            else if (DskyHalfButton->GetValue()) {
+              wDSKY = 360;
+              hDSKY = 460;
+            }
+            else if (DskyLiteButton->GetValue()) {
+              // I don't think I have a way of influencing this one.
+              showDSKY = 0;
+            }
+            else if (DskyApoButton->GetValue()) {
+              wDSKY = 570;
+              hDSKY = 680;
+            }
+            else if (DskyApoHalfButton->GetValue()) {
+              wDSKY = 290;
+              hDSKY = 360;
+            }
+            else
+                return false;
+        }
+    }
+    if (DeviceTelemetryCheckbox->GetValue()) {
+        showTelemetry = 1;
+        if (true /*TelemetryResizable->GetValue()*/) {
+            wTelemetry = 510;
+            hTelemetry = 720;
+        }
+        else if (false /*TelemetryRetro->GetValue()*/) {
+            wTelemetry = 770;
+            hTelemetry = 980;
+        }
+        else
+            return false;
+    }
+    if (DeviceDedaCheckbox->GetValue()) {
+        showDEDA = 1;
+        if (DedaFullButton->GetValue()) {
+            wDEDA = 455;
+            hDEDA = 520;
+        }
+        else if (DedaHalfButton->GetValue()) {
+            wDEDA = 255;
+            hDEDA = 365;
+        }
+        else
+            return false;
+    }
+    wSimulate = SCALED(wSimulate);
+    hSimulate = SCALED(hSimulate);
+    wDSKY = SCALED(wDSKY);
+    hDSKY = SCALED(hDSKY);
+    wDEDA = SCALED(wDEDA);
+    hDEDA = SCALED(hDEDA);
+    wTelemetry = SCALED(wTelemetry);
+    hTelemetry = SCALED(hTelemetry);
+
+    // Debug:
+    //fprintf(stderr, "Screen: %d %d %d %d\n", xScreen, yScreen, wScreen, hScreen);
+    //fprintf(stderr, "Simulate: %d %d %d %d %d\n", showSimulate, xSimulate, ySimulate, wSimulate, hSimulate);
+    //fprintf(stderr, "DSKY: %d %d %d %d %d\n", showDSKY, xDSKY, yDSKY, wDSKY, hDSKY);
+    //fprintf(stderr, "DEDA: %d %d %d %d %d\n", showDEDA, xDEDA, yDEDA, wDEDA, hDEDA);
+    //fprintf(stderr, "Telemetry: %d %d %d %d %d\n", showTelemetry, xTelemetry, yTelemetry, wTelemetry, hTelemetry);
+
+    // My approach to packing this is going to be trivial stupid, though there
+    // are better algorithms that could be used if it were worthwhile (see
+    // https://en.wikipedia.org/wiki/Rectangle_packing, section
+    // "Packing different rectangles in a minimum-area rectangle").
+    // Basically, all of the windows are simply put side-by-size if they all
+    // fit that way.  If they don't fit, then they're just overlapped horizontally
+    // by whatever amount that allows them to fit.  There's an exception if
+    // both half-size DSKY and half-size DEDA are used at the same time, since
+    // placing one of those above the other results in something about the
+    // height of a normal-size window.  Also, the Simulation-Status window
+    // is preferentially overlapped compared to all others.
+    // First, try the fully side-by-side option.
+    bool stacked = (showDSKY && showDEDA && (hDSKY + hDEDA) < SCALED(900));
+    int columns = 1;
+    xSimulate = 0;
+    ySimulate = 0;
+    int used = wSimulate;
+    if (stacked) {
+        columns++;
+        xDSKY = used;
+        yDSKY = 0;
+        xDEDA = used + (hDSKY - hDEDA) / 2;
+        yDEDA = hDSKY;
+        used += wDSKY;
+    } else {
+        if (showDSKY) {
+            columns++;
+            xDSKY = used;
+            yDSKY = 0;
+            used += wDSKY;
+        }
+        if (showDEDA) {
+            columns++;
+            xDEDA = used;
+            yDEDA = 0;
+            used += wDEDA;
+        }
+    }
+    if (showTelemetry) {
+        columns++;
+        xTelemetry = used;
+        yTelemetry = 0;
+        used += wTelemetry;
+    }
+
+    // debug
+    //fprintf(stderr, "used=%d columns=%d\n", used, columns);
+
+    if (used <= wScreen)
+        ; // Okay!
+    else if ((used - wSimulate) <= wScreen) {
+        int recover = used - wScreen;
+        xDSKY -= recover;
+        xDEDA -= recover;
+        xTelemetry -= recover;
+        used -= recover;
+    } else {
+        xDSKY -= wSimulate;
+        xDEDA -= wSimulate;
+        xTelemetry -= wSimulate;
+        used -= wSimulate;
+        columns--;
+        int recover = 0, delta  = (used - wScreen + columns - 2) / (columns - 1);
+        if (columns > 1) {
+            recover = delta;
+            if (stacked) {
+                ;
+            } else {
+                if (showDSKY) {
+                    ;
+                }
+                if (showDEDA) {
+                    xDEDA -= recover;
+                    recover += delta;
+                }
+            }
+            if (showTelemetry) {
+                xTelemetry -= recover;
+                recover += delta;
+            }
+        }
+        used -= recover;
+    }
+    xSimulate += xScreen;
+    ySimulate += yScreen;
+    xDSKY += xScreen;
+    yDSKY += yScreen;
+    xDEDA += xScreen;
+    yDEDA += yScreen;
+    xTelemetry += xScreen;
+    yTelemetry += yScreen;
+
+    // Debug:
+    fprintf(stderr, "Screen: %d %d %d %d\n", xScreen, yScreen, wScreen, hScreen);
+    fprintf(stderr, "Simulate: %d %d %d %d %d\n", showSimulate, xSimulate, ySimulate, wSimulate, hSimulate);
+    fprintf(stderr, "DSKY: %d %d %d %d %d\n", showDSKY, xDSKY, yDSKY, wDSKY, hDSKY);
+    fprintf(stderr, "DEDA: %d %d %d %d %d\n", showDEDA, xDEDA, yDEDA, wDEDA, hDEDA);
+    fprintf(stderr, "Telemetry: %d %d %d %d %d\n", showTelemetry, xTelemetry, yTelemetry, wTelemetry, hTelemetry);
+
+    return (true);
+}
+
+// Form an options string like " --x=X --y=Y".
+wxString
+xyOptions(int x, int y) {
+  return wxString::Format(" --x=%d --y=%d", x, y);
+}
+
 // Forms command lines for other programs we want to execute for the
 // simulation.  Returns true on success, false on failure.
 bool
@@ -2776,6 +3317,10 @@ VirtualAGC::FormCommands(void)
       if (block1)
         {
           yaAGC = localExecutableDirectory + PathDelimiter + wxT("yaAGCb1");
+          if (AgcDebugMonitorButton->GetValue())
+            DebugMode = 1;
+          else
+            yaAGC += wxT(" --run");
         }
       else
         {
@@ -2793,7 +3338,11 @@ VirtualAGC::FormCommands(void)
     }
   else
     yaAGC = wxT("");
-  if (DeviceDskyCheckbox->GetValue())
+  if (DskyApoButton->GetValue())
+    yaDSKY = wxT(" --ip=localhost"); // We'll come back to this.
+  else if (DskyApoHalfButton->GetValue())
+    yaDSKY = wxT(" --ip=localhost --half-size"); // We'll come back to this.
+  else if (DeviceDskyCheckbox->GetValue())
     {
       yaDSKY = localExecutableDirectory + PathDelimiter;
 #ifdef __APPLE__
@@ -2807,6 +3356,10 @@ VirtualAGC::FormCommands(void)
           yaDSKY += wxT("yaDSKYb1 --images=images-yaDSKYb1" + PathDelimiter);
           if (DskyNavButton->GetValue())
             yaDSKY += wxT(" --nav-bay");
+          else if (DskyNavHalfButton->GetValue())
+            yaDSKY += wxT(" --half-size --nav-bay");
+          else if (DskyHalfButton->GetValue())
+            yaDSKY += wxT(" --half-size");
         }
       else
         {
@@ -2823,6 +3376,8 @@ VirtualAGC::FormCommands(void)
     }
   else
     yaDSKY = wxT("");
+  if (yaDSKY != "")
+    yaDSKY += xyOptions(xDSKY, yDSKY);
   if (DeviceAcaCheckbox->GetValue())
     {
       // By default we want to use yaACA3 here.  However, if someone
@@ -2850,11 +3405,13 @@ VirtualAGC::FormCommands(void)
       yaTelemetry += wxT ("yaTelemetry.app/Contents/MacOS/");
 #endif
       yaTelemetry += wxT("yaTelemetry");
-      if (TelemetryResizable->GetValue())
+      if (true /*TelemetryResizable->GetValue()*/)
         yaTelemetry += wxT(" --simple");
     }
   else
     yaTelemetry = wxT("");
+  if (yaTelemetry != "")
+	  yaTelemetry += xyOptions(xTelemetry, yTelemetry);
   if (DeviceAeaCheckbox->GetValue())
     {
       AeaSim = true;
@@ -2905,8 +3462,10 @@ VirtualAGC::FormCommands(void)
     }
   else
     yaDEDA = wxT("");
+  if (yaDEDA != "")
+	  yaDEDA += xyOptions(xDEDA, yDEDA);
   if (DeviceCpumonCheckbox->GetValue())
-    LM_Simulator = wxT("wish VirtualAGC.tcl --cfg=lm_simulator.ini");
+    LM_Simulator = AGC_WISH + wxT("wish VirtualAGC.tcl --cfg=lm_simulator.ini");
   else
     LM_Simulator = wxT("");
   wxString basename;
@@ -2952,14 +3511,20 @@ VirtualAGC::FormCommands(void)
       CoreBin = wxT("source/") + basename + wxT("/") + basename + wxT(".bin");
       CorePad = wxT("source/") + basename + wxT("/") + basename + wxT(".pad");
       CoreLst = wxT("source/") + basename + wxT("/") + basename + wxT(".lst");
-      if (DebugMode)
+      if (DebugMode && !block1)
         DirCmd += wxT("source/" + basename);
     }
+  //if (DebugMode && block1)
+  //  yaAGC += wxT(" --symtab=\"source/") + basename + wxT("/") + basename + wxT(".symtab\"");
   if (mission == ID_SUNBURST37BUTTON)
     {
       yaAGC += wxT(" --initialize-sunburst-37");
     }
-  if (CMorLM.IsSameAs(wxT("CM")))
+  if (block1)
+    {
+      TelemetrySwitches = wxT(" --port=19672 --spacecraft=CM");
+    }
+  else if (CMorLM.IsSameAs(wxT("CM")))
     {
       CmSim = true;
       TelemetrySwitches = wxT(" --port=19700 --spacecraft=CM");
@@ -2969,6 +3534,7 @@ VirtualAGC::FormCommands(void)
       LmSim = true;
       TelemetrySwitches = wxT(" --port=19800 --spacecraft=LM");
     }
+  TelemetrySwitches += wxT(" --software=") + basename;
   if (!yaTelemetry.IsSameAs(wxT("")))
     yaTelemetry += TelemetrySwitches;
   if (!yaAGC.IsSameAs(wxT("")))
@@ -2977,7 +3543,7 @@ VirtualAGC::FormCommands(void)
           + Port + DirCmd;
       if (block1)
         {
-          yaAGC += wxT(" --run --pads=\"") + CorePad + wxT("\" --listing=\"")
+          yaAGC += wxT(" --pads=\"") + CorePad + wxT("\" --listing=\"")
               + CoreLst + wxT("\"");
         }
       else
@@ -2991,7 +3557,7 @@ VirtualAGC::FormCommands(void)
       if (CustomResumeButton->GetValue()
           && wxFileExists(CoreFilename->GetValue()))
         yaAGC += wxT(" --resume=\"") + CoreFilename->GetValue() + wxT("\"");
-      if (AgcDebugMonitorButton->GetValue())
+      if (AgcDebugMonitorButton->GetValue() && !block1)
         {
           wxString Symtab = CoreBin + wxT(".symtab");
           if (wxFileExists(Symtab))
@@ -3003,8 +3569,23 @@ VirtualAGC::FormCommands(void)
       if (block1)
         yaDSKY += wxT(" --port=") + Port;
       else
-        yaDSKY += wxT(" --cfg=") + wxString::FromUTF8(dskyIni) /* CMorLM + wxT(".ini") */
-        + wxT(" --port=") + Port;
+        {
+          yaDSKY += wxT(" --cfg=") + wxString::FromUTF8(dskyIni) /* CMorLM + wxT(".ini") */
+          + wxT(" --port=") + Port;
+          if (DskyApoButton->GetValue() || DskyApoHalfButton->GetValue())
+            {
+              wxString yaDSKYa;
+              //yaDSKYa = wxT("for n in `mdfind kMDItemCFBundleIdentifier=\"com.ramsaycons.ApoDisKey\"`\n");
+              //yaDSKYa += wxT("do\n");
+              //yaDSKYa += wxT("    stat -f \"%m '%N'\" -t \"%s\" \"$n\"\n");
+              //yaDSKYa += wxT("done | sort -n | tail -1 | grep -o \"'.*'$\" | ");
+              //yaDSKYa += wxT("awk '{ print $0\"/Contents/MacOS/ApoDisKey");
+              yaDSKYa = wxString::Format("%s/Contents/MacOS/ApoDisKey", whereApoDisKey);
+              yaDSKYa += yaDSKY;
+              //yaDSKYa += wxT("\" }' | bash");
+              yaDSKY = yaDSKYa;
+            }
+        }
     }
   return (true);
 }
@@ -3052,6 +3633,7 @@ VirtualAGC::FormScript (void)
       }
     if (Fout.Create (wxT ("simulate2.bat"), true))
       {
+        //Fout.Write (wxT ("if not DEFINED IS_MINIMIZED set IS_MINIMIZED=1 && start \"\" /min \"%~dpnx0\" %* && exit" EOL));
         if (StartupWipeButton->GetValue ())
           {
             Fout.Write (wxT ("del LM.core" EOL));
@@ -3060,6 +3642,7 @@ VirtualAGC::FormScript (void)
         //if (FunkyYaACA)
         //  Fout.Write (wxT ("start cmd /C ") + yaACA + wxT (EOL));
         Fout.Write (wxT ("..\\bin\\WinAGC.exe <simulate.bat" EOL));
+        //Fout.Write (wxT ("exit" EOL));
         Fout.Close ();
       }
     else
@@ -3080,6 +3663,7 @@ VirtualAGC::FormScript(void)
   wxString localExecutableDirectory = wxT("..") + PathDelimiter + wxT("bin");
 #endif
   wxFile Fout;
+  wxString sleepTime = wxT("sleep 0.2\n"); // To help with tiling the windows.
   if (Fout.Create(wxT("simulate"), true, wxS_DEFAULT | wxS_IXUSR | wxS_IXGRP))
     {
       Fout.Write(wxT("#!/bin/sh\n"));
@@ -3093,6 +3677,28 @@ VirtualAGC::FormScript(void)
           Fout.Write(wxT("rm CM.core\n"));
         }
 
+      Fout.Write(sleepTime);
+
+      // Run AGC
+      if (DeviceAgcCheckbox->GetValue())
+        {
+          if (AgcDebugMonitorButton->GetValue())
+            {
+#ifdef __APPLE__
+              Fout.Write (wxT ("../MacOS/Terminator.app/Contents/MacOS/Terminator --working-directory \""));
+              Fout.Write (ResourceDirectory);
+              Fout.Write (wxT ("\" \'"));
+              Fout.Write (yaAGC + wxT ("\' &\n"));
+#else
+              Fout.Write(wxT("xterm -fa monospace -sb -geometry 112x40 -e "));
+              Fout.Write(yaAGC + wxT(" &\n"));
+#endif
+            }
+          else
+            Fout.Write(yaAGC + wxT(" &\n"));
+          Fout.Write(wxT("PIDS=\"$! ${PIDS}\"\n"));
+        }
+
       // Run DSKY
       if (DeviceDskyCheckbox->GetValue())
         {
@@ -3102,6 +3708,7 @@ VirtualAGC::FormScript(void)
               // Fout.Write (wxT ("xterm -geometry 80x43 -e "));
               Fout.Write(yaDSKY + wxT(" &\n"));
               Fout.Write(wxT("PIDS=\"$! ${PIDS}\"\n"));
+              Fout.Write(sleepTime);
             }
         }
 
@@ -3109,6 +3716,14 @@ VirtualAGC::FormScript(void)
       if (DeviceDedaCheckbox->GetValue())
         {
           Fout.Write(yaDEDA + wxT(" &\n"));
+          Fout.Write(wxT("PIDS=\"$! ${PIDS}\"\n"));
+          Fout.Write(sleepTime);
+        }
+
+      // Run yaTelemetry
+      if (DeviceTelemetryCheckbox->GetValue())
+        {
+          Fout.Write(yaTelemetry + wxT(" &\n"));
           Fout.Write(wxT("PIDS=\"$! ${PIDS}\"\n"));
         }
 
@@ -3123,7 +3738,7 @@ VirtualAGC::FormScript(void)
               Fout.Write (wxT ("\" \'"));
               Fout.Write (yaAGS + wxT ("\' &\n"));
 #else
-              Fout.Write(wxT("xterm -sb -geometry 112x40 -e "));
+              Fout.Write(wxT("xterm -fa monospace -sb -geometry 112x40 -e "));
               Fout.Write(yaAGS + wxT(" &\n"));
 #endif
             }
@@ -3139,26 +3754,6 @@ VirtualAGC::FormScript(void)
           Fout.Write(wxT("PIDS=\"$! ${PIDS}\"\n"));
         }
 
-      // Run AGC
-      if (DeviceAgcCheckbox->GetValue())
-        {
-          if (AgcDebugMonitorButton->GetValue())
-            {
-#ifdef __APPLE__
-              Fout.Write (wxT ("../MacOS/Terminator.app/Contents/MacOS/Terminator --working-directory \""));
-              Fout.Write (ResourceDirectory);
-              Fout.Write (wxT ("\" \'"));
-              Fout.Write (yaAGC + wxT ("\' &\n"));
-#else
-              Fout.Write(wxT("xterm -sb -geometry 112x40 -e "));
-              Fout.Write(yaAGC + wxT(" &\n"));
-#endif
-            }
-          else
-            Fout.Write(yaAGC + wxT(" &\n"));
-          Fout.Write(wxT("PIDS=\"$! ${PIDS}\"\n"));
-        }
-
       // Run LM-Simulator
       if (DeviceCpumonCheckbox->GetValue())
         {
@@ -3168,13 +3763,6 @@ VirtualAGC::FormScript(void)
           // running (perhaps because of the time it takes to load symbol
           // tables or something).
           Fout.Write(LM_Simulator + wxT(" &\n"));
-          Fout.Write(wxT("PIDS=\"$! ${PIDS}\"\n"));
-        }
-
-      // Run yaTelemetry
-      if (DeviceTelemetryCheckbox->GetValue())
-        {
-          Fout.Write(yaTelemetry + wxT(" &\n"));
           Fout.Write(wxT("PIDS=\"$! ${PIDS}\"\n"));
         }
 
@@ -3206,7 +3794,8 @@ VirtualAGC::FormScript(void)
 Simulation::Simulation(wxWindow* parent, int id, const wxString& title,
     const wxPoint& pos, const wxSize& size, long style) :
     wxFrame(parent, id, title, pos, size,
-        wxCAPTION | wxMINIMIZE_BOX | wxSTAY_ON_TOP | wxSYSTEM_MENU)
+        /*wxCAPTION | wxMINIMIZE_BOX | wxSYSTEM_MENU | wxRESIZE_BORDER */
+        wxDEFAULT_FRAME_STYLE & ~(wxCLOSE_BOX | wxMAXIMIZE_BOX))
 {
   DetailPanel = new wxPanel(this, wxID_ANY, wxDefaultPosition, wxDefaultSize,
       wxNO_BORDER | wxTAB_TRAVERSAL);
@@ -3220,7 +3809,7 @@ Simulation::Simulation(wxWindow* parent, int id, const wxString& title,
       wxT("Digital uplink status"));
   if (!maximumSquish)
     PatchBitmap = new wxStaticBitmap(this, wxID_ANY,
-        wxBitmap(wxT("ApolloPatch2.png"), wxBITMAP_TYPE_ANY));
+        scaledBitmap(wxT("ApolloPatch2.png"), wxBITMAP_TYPE_ANY));
   SimulationLabel = new wxStaticText(this, ID_SIMULATIONLABEL,
       wxT("Apollo 13 Lunar Module\nsimulation in progress!"), wxDefaultPosition,
       wxDefaultSize);
@@ -3231,7 +3820,7 @@ Simulation::Simulation(wxWindow* parent, int id, const wxString& title,
       wxDefaultPosition, wxDefaultSize,
       wxTE_MULTILINE | wxTE_READONLY | wxHSCROLL | wxTE_RICH);
   ScriptText = new wxTextCtrl(ScriptPanel, wxID_ANY, wxEmptyString,
-      wxDefaultPosition, wxDefaultSize,
+      wxDefaultPosition, wxSize(SCALED(500), SCALED(500)),
       wxTE_MULTILINE | wxTE_READONLY | wxHSCROLL | wxTE_RICH);
 
   set_properties();
@@ -3324,7 +3913,7 @@ Simulation::UploadEvent(wxCommandEvent &event)
 void
 Simulation::set_properties()
 {
-  SetTitle(wxT("Simulation status"));
+  SetTitle(wxT("Simulation Status"));
   wxIcon _icon;
   _icon.CopyFromBitmap(wxBitmap(wxT("ApolloPatch2.png"), wxBITMAP_TYPE_ANY));
   SetIcon(_icon);
@@ -3338,96 +3927,98 @@ Simulation::set_properties()
   UploadButton->SetToolTip(
       wxT(
           "Click this button to use the digital-uplink to send data to the AGC or AEA from a pre-created script of commands.  This allows setting the AGC or AEA to a known configuration suitable for your purposes, much in the same way mission control could have done this in real missions."));
-  UplinkText->SetMinSize(wxSize(480, 480));
+  UplinkText->SetClientSize(wxSize(SCALED(480), SCALED(480)));
   UplinkText->SetBackgroundColour(wxColour(230, 230, 230));
+  UplinkText->SetForegroundColour(wxColour(0, 0, 0));
   UplinkText->SetFont(wxFont(10, wxFONTFAMILY_MODERN, wxFONTSTYLE_NORMAL, wxFONTWEIGHT_NORMAL, 0, wxT("")));
   UplinkPanel->SetBackgroundColour(wxColour(255, 255, 255));
+  UplinkPanel->SetForegroundColour(wxColour(0, 0, 0));
   UplinkPanel->Hide();
-  ScriptText->SetMinSize(wxSize(480, 480));
+  //ScriptText->SetClientSize(wxSize(SCALED(480), SCALED(480)));
   ScriptText->SetBackgroundColour(wxColour(230, 230, 230));
+  ScriptText->SetForegroundColour(wxColour(0, 0, 0));
   ScriptText->SetFont(wxFont(8, wxFONTFAMILY_MODERN, wxFONTSTYLE_NORMAL, wxFONTWEIGHT_NORMAL, 0, wxT("")));
   DetailPanel->SetBackgroundColour(wxColour(255, 255, 255));
+  DetailPanel->SetForegroundColour(wxColour(0, 0, 0));
 }
 
 void
 Simulation::do_layout()
 {
-  wxBoxSizer* sizer_25 = new wxBoxSizer(wxVERTICAL);
-  wxBoxSizer* sizer_17 = new wxBoxSizer(wxHORIZONTAL);
-  wxBoxSizer* sizer_31 = new wxBoxSizer(wxVERTICAL);
-  wxStaticBoxSizer* sizer_32 = new wxStaticBoxSizer(sizer_32_staticbox,
+  wxBoxSizer* SimulationEntire = new wxBoxSizer(wxVERTICAL);
+  wxBoxSizer* DetailPanelSizer = new wxBoxSizer(wxHORIZONTAL);
+  wxBoxSizer* ScriptPanelSizer = new wxBoxSizer(wxVERTICAL);
+  wxStaticBoxSizer* SimulationScriptTextSizer = new wxStaticBoxSizer(sizer_32_staticbox,
       wxHORIZONTAL);
   wxStaticBoxSizer* sizer_33 = new wxStaticBoxSizer(sizer_33_staticbox,
       wxHORIZONTAL);
-  wxBoxSizer* sizer_16 = new wxBoxSizer(wxHORIZONTAL);
-  wxBoxSizer* sizer_27 = new wxBoxSizer(wxHORIZONTAL);
-  wxBoxSizer* sizer_26 = new wxBoxSizer(wxHORIZONTAL);
-  if (!maximumSquish)
-    sizer_25->Add(20, 10, 0,
+  wxBoxSizer* SimulationButtons = new wxBoxSizer(wxHORIZONTAL);
+  wxBoxSizer* SimulationDescription = new wxBoxSizer(wxHORIZONTAL);
+  wxBoxSizer* SimulationPatch = new wxBoxSizer(wxHORIZONTAL);
+  if (!maximumSquish) {
+    SimulationEntire->Add(SCALED(20), SCALED(10), 0,
         wxALIGN_CENTER_HORIZONTAL | wxALIGN_CENTER_VERTICAL, 0);
-  if (!maximumSquish)
-    {
-      sizer_26->Add(20, 20, 1,
-          wxALIGN_CENTER_HORIZONTAL | wxALIGN_CENTER_VERTICAL, 0);
-      sizer_26->Add(PatchBitmap, 0,
-          wxALIGN_CENTER_HORIZONTAL | wxALIGN_CENTER_VERTICAL, 0);
-      sizer_26->Add(20, 20, 1,
-          wxALIGN_CENTER_HORIZONTAL | wxALIGN_CENTER_VERTICAL, 0);
+    SimulationPatch->Add(SCALED(20), SCALED(20), 1,
+        wxALIGN_CENTER_HORIZONTAL | wxALIGN_CENTER_VERTICAL, 0);
+    SimulationPatch->Add(PatchBitmap, 0,
+        wxALIGN_CENTER_HORIZONTAL | wxALIGN_CENTER_VERTICAL, 0);
+    SimulationPatch->Add(SCALED(20), SCALED(20), 1,
+        wxALIGN_CENTER_HORIZONTAL | wxALIGN_CENTER_VERTICAL, 0);
     }
-  sizer_25->Add(sizer_26, 0, wxEXPAND, 0);
-  if (!maximumSquish)
-    sizer_25->Add(20, 20, 0,
+  SimulationEntire->Add(SimulationPatch, 0, wxEXPAND, 0);
+  if (!maximumSquish) {
+    SimulationEntire->Add(SCALED(20), SCALED(20), 0,
         wxALIGN_CENTER_HORIZONTAL | wxALIGN_CENTER_VERTICAL, 0);
-  if (!maximumSquish)
-    sizer_27->Add(20, 20, 0,
+    SimulationDescription->Add(SCALED(20), SCALED(20), 0,
         wxALIGN_CENTER_HORIZONTAL | wxALIGN_CENTER_VERTICAL, 0);
-  sizer_27->Add(SimulationLabel, 1, wxEXPAND, 0);
+  }
+  SimulationDescription->Add(SimulationLabel, 1, wxEXPAND, 0);
   if (!maximumSquish)
-    sizer_27->Add(20, 20, 0,
+    SimulationDescription->Add(SCALED(20), SCALED(20), 0,
         wxALIGN_CENTER_HORIZONTAL | wxALIGN_CENTER_VERTICAL, 0);
-  sizer_25->Add(sizer_27, 0, wxEXPAND, 0);
+  SimulationEntire->Add(SimulationDescription, 0, wxEXPAND, 0);
+  //if (!maximumSquish)
+  //  SimulationEntire->Add(SCALED(20), SCALED(20), 0,
+  //      wxALIGN_CENTER_HORIZONTAL | wxALIGN_CENTER_VERTICAL, 0);
   if (!maximumSquish)
-    sizer_25->Add(20, 20, 0,
-        wxALIGN_CENTER_HORIZONTAL | wxALIGN_CENTER_VERTICAL, 0);
-  if (!maximumSquish)
-    sizer_16->Add(20, 20, 1, 0, 0);
-  sizer_16->Add(MoreButton, 0,
+    SimulationButtons->Add(SCALED(20), SCALED(20), 1, 0, 0);
+  SimulationButtons->Add(MoreButton, 0,
       wxALIGN_CENTER_HORIZONTAL | wxALIGN_CENTER_VERTICAL, 0);
-  sizer_16->Add(50, 20, 0, 0, 0);
-  sizer_16->Add(LessButton, 0,
+  SimulationButtons->Add(SCALED(50), SCALED(20), 0, 0, 0);
+  SimulationButtons->Add(LessButton, 0,
       wxALIGN_CENTER_HORIZONTAL | wxALIGN_CENTER_VERTICAL, 0);
   if (!maximumSquish)
-    sizer_16->Add(50, 20, 0, 0, 0);
-  sizer_16->Add(UploadButton, 0, 0, 0);
+    SimulationButtons->Add(SCALED(50), SCALED(20), 0, 0, 0);
+  SimulationButtons->Add(UploadButton, 0, 0, 0);
   if (!maximumSquish)
-    sizer_16->Add(20, 20, 1, 0, 0);
-  sizer_25->Add(sizer_16, 0, wxEXPAND, 0);
+    SimulationButtons->Add(SCALED(20), SCALED(20), 1, 0, 0);
+  SimulationEntire->Add(SimulationButtons, 0, wxEXPAND, 0);
   if (!maximumSquish)
-    sizer_25->Add(20, 10, 0, 0, 0);
+    SimulationEntire->Add(SCALED(20), SCALED(10), 0, 0, 0);
   sizer_33->Add(UplinkText, 1, wxEXPAND, 0);
   UplinkPanel->SetSizer(sizer_33);
-  sizer_25->Add(UplinkPanel, 1, wxEXPAND, 0);
+  SimulationEntire->Add(UplinkPanel, 1, wxEXPAND, 0);
   if (!maximumSquish)
-    sizer_17->Add(10, 20, 0, 0, 0);
-  sizer_32->Add(ScriptText, 1, wxEXPAND, 0);
-  ScriptPanel->SetSizer(sizer_32);
-  sizer_31->Add(ScriptPanel, 0, wxEXPAND, 0);
+    DetailPanelSizer->Add(SCALED(10), SCALED(20), 0, 0, 0);
+  SimulationScriptTextSizer->Add(ScriptText, 1, wxEXPAND, 0);
+  ScriptPanel->SetSizer(SimulationScriptTextSizer);
+  ScriptPanelSizer->Add(ScriptPanel, 0, wxEXPAND, 0);
   if (!maximumSquish)
-    sizer_31->Add(20, 10, 0, 0, 0);
-  sizer_17->Add(sizer_31, 1, wxEXPAND, 0);
+    ScriptPanelSizer->Add(SCALED(20), SCALED(10), 0, 0, 0);
+  DetailPanelSizer->Add(ScriptPanelSizer, 1, wxEXPAND, 0);
   if (!maximumSquish)
-    sizer_17->Add(10, 20, 0, 0, 0);
-  DetailPanel->SetSizer(sizer_17);
-  sizer_25->Add(DetailPanel, 1, wxEXPAND, 0);
-  SetSizer(sizer_25);
-  sizer_25->Fit(this);
+    DetailPanelSizer->Add(SCALED(10), SCALED(20), 0, 0, 0);
+  DetailPanel->SetSizer(DetailPanelSizer);
+  SimulationEntire->Add(DetailPanel, 1, wxEXPAND, 0);
+  SetSizer(SimulationEntire);
+  SimulationEntire->Fit(this);
   Layout();
 }
 
 void
 Simulation::WriteSimulationLabel(wxString Label)
 {
-  SimulationLabel->SetLabel(Label + wxT("\nAGC simulation running!"));
+  SimulationLabel->SetLabel(Label + wxT("\nAGC simulation running!\n    "));
   SimulationLabel->Fit();
   Layout();
 }
@@ -3883,6 +4474,11 @@ TimerClass::Notify()
           MainFrame->SimulationWindow->Fit();
           MainFrame->SimulationWindow->Refresh();
           MainFrame->SimulationWindow->Update();
+          if (MainFrame->SimulationWindow->MoreEnabled) {
+            wxSize s = MainFrame->SimulationWindow->GetClientSize();
+            wxPoint p = MainFrame->SimulationWindow->UploadButton->GetPosition();
+            MainFrame->SimulationWindow->SetClientSize(wxSize(s.x, p.y + SCALED(60)));
+          }
           MainFrame->SimulationWindow->Show();
           Stop();
         }

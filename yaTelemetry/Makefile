@@ -40,6 +40,8 @@
 #				except mine, and only affect the Linux versions of
 #				the executables.
 # 		2017-08-24 RSB	Added wxFLAGS.
+#		2025-04-02 RSB	YATELEMETRY_SWITCHES defaults to 
+#				-DSHOW_WORD_NUMBERS.
 
 APP=yaTelemetry
 
@@ -61,6 +63,8 @@ BIN_WIN=${HOME}/IMCROSS/i386-mingw32/bin/
 BIN_MAC=${HOME}/IMCROSS/mac/bin/
 INC_MAC=${HOME}/IMCROSS/mac/include
 SDK_MAC=${HOME}/IMCROSS/mac/SDKs/MacOSX10.4u.sdk
+
+YATELEMETRY_SWITCHES=-DSHOW_WORD_NUMBERS
 
 # This is just so that when I build it, I can insure that it will be statically or
 # dynamically linked in the binary installers, according to my current whims.
@@ -99,7 +103,7 @@ SOURCESc:=\
 HEADERS:=${APP}.h
 
 ${APP}: ${SOURCES} ${SOURCESc} ${HEADERS}
-	${CC} -DNVER=${NVER} \
+	${CC} ${YATELEMETRY_SWITCHES} -DNVER=${NVER} \
 		`wx-config --cxxflags` ${wxFLAGS} \
 		-o $@ ${SOURCES} ${DASHX} ${SOURCESc} \
 		`wx-config --libs` \
@@ -107,7 +111,7 @@ ${APP}: ${SOURCES} ${SOURCESc} ${HEADERS}
 	strip $@${EXT}
 
 ${APP}.exe: ${SOURCES} ${SOURCESc} ${HEADERS}
-	${PREFIX_WIN}${CC} \
+	${PREFIX_WIN}${CC} ${YATELEMETRY_SWITCHES} \
 		`${BIN_WIN}wx-config ${WXSTATIC} --cxxflags` \
 		-o $@ ${SOURCES} ${DASHX} ${SOURCESc} \
 		`${BIN_WIN}wx-config ${WXSTATIC} --libs` \

@@ -392,6 +392,14 @@
  *				cycle has had time to complete. This is important
  *				when running ropes sensitive to this timing,
  *				like Artemis and Skylark.
+ *		07/16/24 MAS	Changed TC trap implementation to differentiate
+ *				between real TC/TCFs and transients for the purpose
+ *				of resetting the "TCs only" side of the alarm.
+ *				This alarm was improperly considering all instructions
+ *				that trigger transients to be real TCs/TCFs. This
+ *				resulted in erroneous triggerings for instruction
+ *				sequences consisting of only TCs and transient-
+ *				generating instructions (e.g. a CS A; TC -1 loop).
  *
  * The technical documentation for the Apollo Guidance & Navigation (G&N) system,
  * or more particularly for the Apollo Guidance Computer (AGC) may be found at
@@ -1875,6 +1883,7 @@ agc_engine (agc_t * State)
   //int OverflowQ, Qumulator;
   // Keep track of TC executions for the TC Trap alarm
   int ExecutedTC = 0;
+  int TCTransient = 0;
   int JustTookBZF = 0;
   int JustTookBZMF = 0;
 
@@ -2027,6 +2036,8 @@ agc_engine (agc_t * State)
                   State->SbyStillPressed = 1;
 
                   // While this isn't technically an alarm, it causes GOJAM just like all the rest
+                  if (ShowAlarms)
+                    printf("Alarm: Standby\n");
                   TriggeredAlarm = 1;
 
                   // Turn on the STBY light, and switch off the EL segments
@@ -2054,6 +2065,8 @@ agc_engine (agc_t * State)
           if (!State->Standby && State->NightWatchman)
             {
               // NEWJOB wasn't checked before 0.64s elapsed. Sound the alarm!
+              if (ShowAlarms)
+                printf("Alarm: NightWatchman\n");
               TriggeredAlarm = 1;
 
               // Set the NIGHT WATCHMAN bit in channel 77. Don't go through CpuWriteIO() because
@@ -2102,6 +2115,10 @@ agc_engine (agc_t * State)
           else if ((State->RuptLock || State->NoRupt) && 0300 == (0777 & State->InputChannel[ChanSCALER1]))
             {
               // We've either had no interrupts, or stuck in one, for 140ms. Sound the alarm!
+              if (ShowAlarms && State->RuptLock)
+                printf("Alarm: RuptLock\n");
+              if (ShowAlarms && State->NoRupt)
+                printf("Alarm: NoRupt\n");
               TriggeredAlarm = 1;
 
               // Set the RUPT LOCK bit in channel 77.
@@ -2117,6 +2134,10 @@ agc_engine (agc_t * State)
           else if ((State->TCTrap || State->NoTC) && 000 == (037 & State->InputChannel[ChanSCALER1]))
             {
               // We've either executed no TC at all, or only TCs, for the past 5ms. Sound the alarm!
+              if (ShowAlarms && State->TCTrap)
+                printf("Alarm: TCTrap\n");
+              if (ShowAlarms && State->NoTC)
+                printf("Alarm: NoTC\n");
               TriggeredAlarm = 1;
 
               // Set the TC TRAP bit in channel 77.
@@ -2562,7 +2583,7 @@ agc_engine (agc_t * State)
 
   // A BZF followed by an instruction other than EXTEND causes a TCF0 transient
   if (State->TookBZF && !((ExtendedOpcode == 000) && (Address12 == 6)))
-    ExecutedTC = 1;
+    TCTransient = 1;
 
   // Parse the instruction.  Refer to p.34 of 1689.pdf for an easy 
   // picture of what follows.
@@ -2584,7 +2605,7 @@ agc_engine (agc_t * State)
 
           if (State->TookBZF || State->TookBZMF)
             // RELINT after a single-cycle instruction causes a TC0 transient
-            ExecutedTC = 1;
+            TCTransient = 1;
         }
       else if (ValueK == 4)	// INHINT instruction.
         {
@@ -2592,7 +2613,7 @@ agc_engine (agc_t * State)
 
           if (State->TookBZF || State->TookBZMF)
             // INHINT after a single-cycle instruction causes a TC0 transient
-            ExecutedTC = 1;
+            TCTransient = 1;
         }
       else if (ValueK == 6)	// EXTEND instruction.
 	{
@@ -2812,7 +2833,7 @@ agc_engine (agc_t * State)
       case 045:
       case 046:
       case 047:
-      ExecutedTC = 1; // CS causes transients on the TC0 line
+      TCTransient = 1; // CS causes transients on the TC0 line
 
       if (IsA (Address12))// COM
 	{
@@ -2873,7 +2894,7 @@ agc_engine (agc_t * State)
       break;
       case 052:			// DXCH
       case 053:
-      ExecutedTC = 1; // DXCH causes transients on the TCF0 line
+      TCTransient = 1; // DXCH causes transients on the TCF0 line
 
       // Remember, in the following comparisons, that the address is pre-incremented.
       if (IsL (Address10))
@@ -2917,7 +2938,7 @@ agc_engine (agc_t * State)
       break;
       case 054:			// TS
       case 055:
-      ExecutedTC = 1; // TS causes transients on the TCF0 line
+      TCTransient = 1; // TS causes transients on the TCF0 line
       if (IsA (Address10))// OVSK
 	{
 	  if (Overflow)
@@ -2946,7 +2967,7 @@ agc_engine (agc_t * State)
       break;
       case 056:			// XCH
       case 057:
-      ExecutedTC = 1; // XCH causes transients on the TCF0 line
+      TCTransient = 1; // XCH causes transients on the TCF0 line
       if (IsA (Address10))
       break;
       if (Address10 < REG16)
@@ -3487,8 +3508,8 @@ agc_engine (agc_t * State)
       else State->RuptLock = 0;
 
       // Update TC Trap flags according to the instruction we just executed
-      if (ExecutedTC) State->NoTC = 0;
-      else State->TCTrap = 0;
+      if (ExecutedTC || TCTransient) State->NoTC = 0;
+      if (!ExecutedTC) State->TCTrap = 0;
 
       State->TookBZF = JustTookBZF;
       State->TookBZMF = JustTookBZMF;

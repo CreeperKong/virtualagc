@@ -11,10 +11,11 @@ History:    2023-08-24 RSB  Began importing global variables from ##DRIVER.xpl.
             2023-08-25 RSB  Finished initial port.
             2023-09-07 RSB  Split off xplBuiltins.py to contain just the 
                             functions.
+            2024-06-20 RSB  Stuff related to `D DOWNGRADE`
 '''
 
 # The version of the compiler port: (Y, M, D, H, M, S).
-version = (2023, 11, 17, 13, 0, 0)
+version = (2024, 6, 8, 21, 14, 0)
 
 import sys
 
@@ -40,6 +41,7 @@ intersection = False
 extraTrace = False
 debugwr = False
 templib = False
+traceInlines = False
 
 # Apparently comes from MONITOR.bal, normally, but we don't have that and so
 # must hard-code something that's big enough but not too big.
@@ -50,30 +52,62 @@ FREEPOINT = 0  # Must be somewhat smaller than FREELIMIT
 # compiler, some of which I may allow to be altered by command-line parameters.
 # The names correspond to the documentation, as prefixed by 'p'.
 pOPTIONS_CODE = 0
+'''
 pCON = ["NOADDRS", "NODECK", "NODUMP", "NOHALMAT", "NOHIGHOPT", "LFXI",
         "NOLIST", "NOLISTING2", "NOLSTALL", "MICROCODE", "NOPARSE",
         "NOREGOPT", "SCAL", "NOSDL", "NOSREF", "NOSRN", "NOTABDMP",
         "TABLES", "NOTABLST", "NOTEMPLATE", "NOVARSYM", "ZCON"]
-pPRO = [""] * len(pCON)
+'''
+# Note that pCONp is given for PFS.
+pCONp = ["NODUMP", "NOLISTING2", "NOLIST", "TRACE", "NOVARSYM", 
+        "NODECK", "TABLES", "NOTABLST", "NOADDRS", "NOSRN", "NOSDL", 
+        "NOTABDMP", "ZCON", "NOHALMAT", "NOREGOPT", "MICROCODE", 
+        "NOSREF", "NOQUASI", "NOTEMPLATE", "NOHIGHOPT", "NOPARSE",
+        "NOLSTALL", "LFXI", "NOX1", "NOX4", "NOX5", "NOXA", "NOX6",
+        "NOXB", "NOXC", "NOXE", "NOXF"]
+# Note that pCONb is given for BFS.
+pCONb = ["NODUMP", "NOLISTING2", "NOLIST", "TRACE", "NOVARSYM", 
+        "NODECK", "TABLES", "NOTABLST", "NOADDRS", "NOSRN", "NOSDL", 
+        "NOTABDMP", "ZCON", "NOHALMAT", "SCAL", "MICROCODE", 
+        "NOSREF", "NOQUASI", "NOREGOPT", "NOTEMPLATE", "NOHIGHOPT", "NOPARSE",
+        "NOLSTALL", "LFXI", "NOX1", "NOX4", "NOX5", "NOXA", "NOX6",
+        "NOXB", "NOXC", "NOXF"]
+pPROp = [""] * len(pCONp)
+pPROb = [""] * len(pCONb)
+pCON = pCONp
+pPRO = pPROp
 # (See the comments for TYPE2_TYPE in INITIALI.py.)  Since we have no 
 # operating system to communicate the names and values of type 2 options to
 # us from the JCL, pDESC and pVALS provide those for us.
-pDESC = ["TITLE", "LINECT", "PAGES", "SYMBOLS", "MACROSIZE", "LITSTRING",
+pDESC = ["TITLE", "LINECT", "PAGES", "SYMBOLS", "MACROSIZE", "LITSTRINGS",
          "COMPUNIT", "XREFSIZE", "CARDTYPE", "LABELSIZE", "DSR", "BLOCKSUM",
          "MFID"]
 bfsDESC = pDESC.index("MFID")
-pVALS = ["", "59", "2500", "200", "500", "2500", "0", "2000", "", "1200",
-         "1", "400", "0"]
+pVALS = ["", "59", "2500", "200", "500", "2000", "0", "2000", "", "1200",
+         "1", "400", ""]
+PARM_STRING = ""
 
-for parm in sys.argv[1:]:
+def traceInline(msg):
+    if traceInlines:
+        print("\nTrace INLINE:", msg, end="")
+
+for parmNum in range(1, len(sys.argv)):
+    parm = sys.argv[parmNum]
     if parm.startswith("--hal="):
         pass  # This case is handled in xplBuiltins.py.
+    elif parm == "--trace-inlines":
+        traceInlines = True
     elif parm == "--no-syn":
         pass  # This case is handled by SYNTHESI.py.
     elif parm.startswith("--dummy="):
         pass
     elif parm == '--bfs':
+        if parmNum > 1:
+            print("It is advised that --bfs be the leading command-line option", \
+                  file=sys.stderr)
         pfs = False
+        pCON = pCONb
+        pPRO = pPROb
         index = pDESC.index("MFID")
         pDESC[bfsDESC] = "OLDTPL"
         pVALS[bfsDESC] = 0
@@ -98,6 +132,10 @@ for parm in sys.argv[1:]:
     elif parm in pCON or ("NO" + parm) in pCON or \
             (parm.startswith("NO") and parm[2:] in pCON):
         # Type 1 option:
+        if len(PARM_STRING) != 0:
+            PARM_STRING = PARM_STRING + "," + parm
+        else:
+            PARM_STRING = parm
         if parm in pCON:
             index = pCON.index(parm)
         elif parm.startswith("NO") and parm[2:] in pCON:
@@ -107,6 +145,10 @@ for parm in sys.argv[1:]:
         pCON[index] = parm
     elif "=" in parm and parm.split("=")[0] in (pDESC + ["MFID", "OLDTPL"]):
         # Type 2 option:
+        if len(PARM_STRING) != 0:
+            PARM_STRING = PARM_STRING + "," + parm
+        else:
+            PARM_STRING = parm
         fields = parm.split("=")
         if fields[0] in ["MFID", "OLDTPL"]:
             index = bfsDESC
@@ -127,9 +169,10 @@ for parm in sys.argv[1:]:
         print('                 automatically added if missing.')
         print('--pfs            Compile for PFS (PASS).')
         print('--bfs            Compile for BFS. (Default is --pfs.)')
+        print('                 Note that if --bfs is used, place it first.')
         print('--templib        Identify &&TEMPLIB with TEMPLIB.')
-        print('--utf8           (Default.) Use UTF-8 in program listings.')
-        print('--ascii          Use ASCII in program listings.')
+        print('--utf8           Use UTF-8 in program listings.')
+        print('--ascii          (Default.) Use ASCII in program listings.')
         print('--extra          Enhances messages for some ¢-toggles.')
         print('--no-syn         Do not synthesize HALMAT.')
         print('--sanity         Perform a sanity check on the Python port.')
@@ -139,6 +182,11 @@ for parm in sys.argv[1:]:
         # print('--scan1          Use SCAN1 rather than SCAN')
         # print('--scan2          Use SCAN2 rather than SCAN')
         print('--debugwr        Print debugging messages for OUTPUTWR.')
+        print('--trace-inlines  Print messages for CALL INLINE.  HAL_S_FC')
+        print('                 has no CALL INLINE statements, but the')
+        print('                 messages are at the points where CALL INLINES')
+        print('                 would be, to facilitate comparisons to other')
+        print('                 implementations of the compiler.')
         print('--intersection   Helps test overlap between globals/locals.')
         print('Additionally, many of the options from the original JCL')
         print('PARMLISTs can be used.  For "type 1" options (i.e., those')
@@ -176,95 +224,62 @@ for parm in sys.argv[1:]:
         print("Use --help for more information.")
         sys.exit(1)
 
+# Catch some compiler parameters that aren't (yet?) supported. TABLES isn't
+# supported because it requires virtual-memory features (and possibly lots of
+# other stuf) that I didn't manage to implement while I was originally 
+# developing HAL_S_FC.
+if "TABLES" in pCON:
+    print("HAL_S_FC does not presently support the TABLES parameter.", \
+          file = sys.stderr)
+    print("Please specify NOTABLES in the command-line parameters.", \
+          file = sys.stderr)
+    sys.exit(1)
+
 '''
 The following code relates to determining and printing out the compiler
 options which have been supplied originally by JCL, but for us by 
-command-line options.  The available options are described by the "HAL/S-FC
-User's Manual" (chapter 5), while the organization of these in IBM 
-System/360 system memory (as we would need it to work with the following
-code) is described in the "HAL/S-FC and HAL/S-360 Compiler System Program 
-Description" (IR-182-1) around p. 696. In neither source is there an 
-explanation of how the options specifically relate to the bit-flags in
-the 32-bit variable OPTIONS_WORD, so whatever I know about that has been
-gleaned from looking at how the source code processes that word.
-    Flag          Pass         Keyword (abbreviation)
-    ----          ----         ----------------------
-    0x40000000    1            REGOPT (R) for BFS
-    0x10000000    3            DEBUG
-    0x08000000    3            DLIST
-    0x04000000    1            MICROCODE (MC)
-    0x02000000    1            REGOPT (R) for PFS
-    0x01000000    ?            STATISTICS
-    0x00800000    1            SDL (NONE)
-    0x00400000    4            DECK (D)
-    0x00200000    1            LFXI (NONE)
-    0x00100000    1            ADDRS (A)
-    0x00080000    1            SRN (NONE)
-    0x00040000    1            HALMAT (HM)
-    0x00020000    1            CODE_LISTING_REQUESTED
-    0x00010000    1            PARTIAL_PARSE
-    0x00008000    3,4          SDF_SUMMARY, TABLST (TL)
-    0x00004000    1            EXTRA_LISTING
-    0x00002000    1            SREF (SR)
-    0x00001000    3,4          TABDMP (TBD)
-    0x00000800    1            SIMULATING
-    0x00000400    1            Z_LINKAGE ... perhaps ZCON (Z)
-    0x00000200    ?            TRACE
-    0x00000080    3            HIGHOPT (HO)
-    0x00000040    1,2,4        NO_VM_OPT, ?, BRIEF
-    0x00000020    4            ALL
-    0x00000010    1            TEMPLATE (TP)
-    0x00000008    2,3          TRACE
-    0x00000004    1            LIST (L)
-    0x00000002    1            LISTING2 (L2)
-    ?                          DUMP (DP)
-    ?                          LSTALL (LA)
-    ?                          SCAL (SC) for BFS only
-    ?                          TABLES (TBL)
-    ?                          VARSYM (VS)
+command-line options. 
 '''
-
 if pfs:
     regoptFlag = 0x02000000
     scalFlag = None
 else:
     regoptFlag = 0x40000000
-    scalFlag = None
+    scalFlag =   0x02000000
 parmFlags = {
-    "REGOPT": regoptFlag,
-    "DEBUG": 0x10000000,
-    "DLIST": 0x08000000,
-    "MICROCODE": 0x04000000,
-    "STATISTICS": 0x01000000,
-    "SDL": 0x00800000,
-    "DECK": 0x00400000,
-    "LXFI": 0x00200000,
-    "ADDRS": 0x00100000,
-    "SRN": 0x00080000,
-    "HALMAT": 0x00040000,
-    "CODE_LISTING_REQUESTED": 0x00020000,
-    "PARSE": 0x00010000,
-    "TABLST": 0x00008000,
-    "SDF_SUMMARY": 0x00008000,
-    "EXTRA_LISTING": 0x00004000,
-    "SREF": 0x00004000,
-    "TABDMP": 0x00001000,
-    "SIMULATING": 0x00000800,
-    "ZCON": 0x00000400,
-    "TRACE": 0x00000200,
-    "HIGHOPT": 0x00000080,
-    "NO_VM_OPT": 0x00000040,
-    "BRIEF": 0x00000040,
-    "LSTALL": 0x00000020,
+    "XF":       0x80000000,
+    "XE":       0x40000000,
+    "QUASI":    0x20000000,
+    "XC":       0x10000000,
+    "XB":       0x08000000,
+    "MICROCODE":0x04000000,
+    "REGOPT":   regoptFlag,
+    "SCAL":     scalFlag,
+    "X6":       0x01000000,
+    "SDL":      0x00800000,
+    "DECK":     0x00400000,
+    "LFXI":     0x00200000,
+    "ADDRS":    0x00100000,
+    "SRN":      0x00080000,
+    "HALMAT":   0x00040000,
+    "LSTALL":   0x00020000,
+    "PARSE":    0x00010000,
+    "TABLST":   0x00008000,
+    "XA":       0x00004000,
+    "SREF":     0x00002000,
+    "TABDMP":   0x00001000,
+    "TABLES":   0x00000800,
+    "ZCON":     0x00000400,
+    "X5":       0x00000200,
+    "X4":       0x00000100,
+    "HIGHOPT":  0x00000080,
+    "VARSYM":   0x00000040,
+    "X1":       0x00000020,
     "TEMPLATE": 0x00000010,
-    "TRACE": 0x00000008,
-    "LIST": 0x00000004,
+    "TRACE":    0x00000008,
+    "LIST":     0x00000004,
     "LISTING2": 0x00000002,
-    "DUMP": None,  # TBD
-    "LSTALL": None,  # TBD
-    "SCAL": None,  # TBD for BFS, none for PFS
-    "TABLES": None,  # TBD
-    "VARSYM": None  # TBD
+    "DUMP":     0x00000001
     }
 
 PARM_FIELD = ""
@@ -274,30 +289,36 @@ def fixParm(option):
     global pOPTIONS_CODE, pCON, PARM_FIELD
     if option not in parmFlags:
         return
-    if option in sys.argv[1:]:
+    NO = None
+    mask = parmFlags[option]
+    # Defaults
+    if option in pCON:
         NO = False
         parm = option[:]
-    elif ("NO" + option) in sys.argv[1:]:
+        index = pCON.index(parm)
+    elif ("NO" + option) in pCON:
         NO = True
         parm = "NO" + option
-    else:
+        index = pCON.index(parm)
+    # Overrides for defaults
+    inArgs = False
+    if option in sys.argv[1:]:
+        inArgs = True
+        NO = False
+        parm = option[:]
+        pCON[index] = parm
+    elif ("NO" + option) in sys.argv[1:]:
+        inArgs = True
+        NO = True
+        parm = "NO" + option
+        pCON[index] = parm
+    if inArgs:
+        if len(PARM_FIELD) == 0:
+            PARM_FIELD = parm
+        else:
+            PARM_FIELD = PARM_FIELD + "," + parm
+    if mask == None or NO == None:
         return
-    mask = parmFlags[option]
-    if mask == None:
-        return
-    if option in pCON:
-        index = pCON.index(option)
-        pOPTIONS_CODE |= mask
-    elif ("NO" + option) in pCON:
-        index = pCON.index("NO" + option)
-        pOPTIONS_CODE &= ~mask
-    else:
-        return
-    pCON[index] = parm
-    if len(PARM_FIELD) == 0:
-        PARM_FIELD = parm
-    else:
-        PARM_FIELD = PARM_FIELD + "," + parm
     if NO:
         pOPTIONS_CODE &= ~mask
     else:
@@ -1630,7 +1651,7 @@ SUB_START_TOKEN = 206
 
 # TOKEN IS THE INDEX INTO THE VOCABULARY V() OF THE LAST SYMBOL SCANNED,
 #   BCD IS THE LAST SYMBOL SCANNED (LITERAL CHARACTER STRING).
-TOKEN = -1
+TOKEN = 0
 BCD = ''
 CLOSE_BCD = ''
 
@@ -1668,7 +1689,7 @@ X256 = ' ' * 256
 
 ERROR_COUNT = 0
 MAX_SEVERITY = 0
-STATEMENT_SEVERITY = -1
+STATEMENT_SEVERITY = 0
 VALUE = 0
 
 # DECLARATIONS FOR MACRO PROCESSING
@@ -3392,6 +3413,7 @@ VALID_00_CHAR = BYTE('0')  # THE CHARACTER WHICH, WHEN
                              # GENERATES X'00' INTERNALLY
 
 STACK_DUMPED = 0
+DOWN_COUNT = 0
 SEVERITY = 0
 PARTIAL_PARSE = 0
 TEMPORARY_IMPLIED = 0
@@ -3610,6 +3632,8 @@ def DWN_CLS(n, value=None):
     fixup_DOWN_INFO(n)
     if value == None:
         return h.DOWN_INFO[n].DOWN_CLS[:]
+    elif isinstance(value, int):
+        h.DOWN_INFO[n].DOWN_CLS = "%d" % value
     else:
         h.DOWN_INFO[n].DOWN_CLS = value[:]
 
@@ -3735,3 +3759,10 @@ INCL_REMOTE_FLAG = 0x01
 # it here in order to watchpoint its changes more easily.  There's no naming
 # conflict, so it still behaves the same as it did as a local.
 NEWSIZE = None
+
+# Here are some variables I use for helping with CALL INLINE statements. 
+# However, I did not start out by dealing with these statements in any manner
+# that you could think of as rigorous, and am only doing so in the very 
+# tail-end of development, so these variables are only used in dealing with
+# a handful of patches for the inlines.
+FR = [ 0.0 ] * 16
